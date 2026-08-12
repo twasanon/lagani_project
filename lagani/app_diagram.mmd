@@ -1,0 +1,86 @@
+graph LR
+    %% Define Actors and Systems
+    User(["<fa:fa-user /> User"])
+    subgraph Frontend ["Lagani App (React Native/Expo)"]
+        direction TB
+        subgraph UI
+            direction LR
+            Screens["Screens\n(Home, Detail, Portfolio, News, Settings, Help)"] --- Navigation["React Navigation\n(RootStack, TabNav, HomeStack)"]
+            Screens --- Components["UI Components\n(Cards, Modals, Search, Chart*, Buttons)"]
+        end
+        APIClient["API Client\n(src/api/nepseScraper.ts)"]
+        LocalDB["(<fa:fa-database /> Local DB\nexpo-sqlite)\nUserData: Portfolio, Watchlist, Alerts\nCache: Prices, News, Companies, Movers"]
+        BgTasks["Background Tasks\n(expo-background-fetch / task-manager\nFor Price Alert Checks)"]
+        Notifications["Notification Handler\n(expo-notifications)"]
+
+    end
+
+    subgraph Backend ["Lagani API (Go)"]
+        direction TB
+        Router["Router (Chi)\n/prices, /news, /companies, /status, /movers"]
+        Scheduler["Scheduler (gocron)\nTriggers Jobs"]
+        MarketHoursCheck{"<fa:fa-clock /> Check<br/>Market Hours"}
+        Scraper["Scraper\n(internal/scraper)<br/>Fetches External Data"]
+        DBLayerBE["DB Layer\n(internal/database)\nHandles Cache R/W"]
+    end
+
+    CacheDB["(<fa:fa-database /> Backend Cache DB\nSQLite: lagani_cache.db)"]
+    ExternalSources{{"<fa:fa-cloud /> External Sources\nNEPSE API, Merolagani, Nepalipaisa"}}
+    DeviceNotify(["<fa:fa-mobile-alt /> Device Notifications"])
+
+    %% User Interactions
+    User -- Interacts --> UI
+
+    %% Frontend Internal Flows
+    UI -- Reads/Writes --> LocalDB
+    UI -- Calls --> APIClient
+    BgTasks -- Reads --> LocalDB
+    BgTasks -- Triggers --> Notifications
+
+    %% Frontend <--> Backend Communication
+    APIClient -- HTTP API Calls --> Router
+
+    %% Backend Internal Flows (General)
+    Router -- Uses --> DBLayerBE
+    DBLayerBE -- Reads/Writes --> CacheDB
+
+    %% Data Synchronization Flow (Example: Fetching News from App)
+    Screens -- Requests News --> APIClient
+    APIClient -- GET /news --> Router
+    Router -- Gets News --> DBLayerBE
+    DBLayerBE -- Reads News --> CacheDB
+    DBLayerBE -- Returns News --> Router
+    Router -- Returns News --> APIClient
+    APIClient -- Updates News --> LocalDB
+    LocalDB -- Provides News --> Screens
+
+    %% Background Price Alert Flow (Frontend)
+    %% OS triggers BgTasks periodically
+    BgTasks -- Checks Alerts vs Prices --> LocalDB
+    %% If Alert condition met:
+    BgTasks -- Sends Notification --> Notifications
+    Notifications -- Displays on Device --> DeviceNotify
+    DeviceNotify -- Alerts --> User
+
+    %% Backend Cache Update Flow (Example: Prices via Scheduler)
+    Scheduler -- Triggers Job --> MarketHoursCheck
+    MarketHoursCheck -- Market Open --> Scraper
+    MarketHoursCheck -- Market Closed --> Scheduler
+    %% (Job finishes, waits for next trigger)
+    Scraper -- Fetches Prices --> ExternalSources
+    Scraper -- Updates Prices --> DBLayerBE
+    DBLayerBE -- Writes Prices --> CacheDB
+
+
+    %% Styling
+    classDef frontend fill:#eef,stroke:#333,stroke-width:2px;
+    classDef backend fill:#def,stroke:#333,stroke-width:2px;
+    classDef db fill:#cfc,stroke:#333,stroke-width:1px;
+    classDef external fill:#fcf,stroke:#333,stroke-width:1px;
+    classDef actor fill:#ff9,stroke:#333,stroke-width:2px;
+
+    class User actor;
+    class Frontend frontend;
+    class Backend backend;
+    class CacheDB,LocalDB db;
+    class ExternalSources,DeviceNotify external;
