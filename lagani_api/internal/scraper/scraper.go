@@ -3,12 +3,8 @@ package scraper
 import (
 	"log"
 	"net/url"
+	"strings"
 )
-
-// TODO: Define a common Scraper interface if needed.
-// type Scraper interface {
-// 	 Scrape() error
-// }
 
 // Constants shared across scrapers
 const (
@@ -26,4 +22,13 @@ func resolveURL(baseURL *url.URL, relativeURL string) string {
 		return relativeURL // Return original on parse error
 	}
 	return refURL.String()
+}
+
+func truncateForError(body []byte) string {
+	const maxLength = 512
+	value := strings.TrimSpace(string(body))
+	if len(value) <= maxLength {
+		return value
+	}
+	return value[:maxLength] + "..."
 }

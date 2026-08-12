@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -21,6 +23,18 @@ func getEnv(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func getEnvBool(key string, fallback bool) bool {
+	value, exists := os.LookupEnv(key)
+	if !exists || strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseBool(strings.TrimSpace(value))
+	if err != nil {
+		log.Fatalf("[FATAL] %s must be a boolean, got %q", key, value)
+	}
+	return parsed
 }
 
 func main() {
@@ -88,25 +102,34 @@ func main() {
 	// --- Start Services ---
 
 	// 8. Start Scheduler jobs (in background as cronRunner.Start() is non-blocking)
-	appScheduler.Start() // Corrected to use Start()
+	if getEnvBool("SCHEDULER_ENABLED", true) {
+		if err := appScheduler.Start(); err != nil {
+			log.Fatalf("[FATAL] Failed to start scheduler: %v", err)
+		}
+	} else {
+		log.Println("Scheduler disabled by SCHEDULER_ENABLED=false.")
+	}
 
 	// 9. Configure and Start HTTP Server
 	port := getEnv("PORT", "8080") // Use helper to read PORT or default to 8080
 
 	httpServer := &http.Server{
-		Addr:    ":" + port,
-		Handler: router,
+		Addr:              ":" + port,
+		Handler:           router,
+		ReadHeaderTimeout: 5 * time.Second,
 		// Add timeouts for production readiness
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
-		IdleTimeout:  120 * time.Second,
+		ReadTimeout:    10 * time.Second,
+		WriteTimeout:   15 * time.Second,
+		IdleTimeout:    120 * time.Second,
+		MaxHeaderBytes: 1 << 20,
 	}
 
 	// Start server in a goroutine
+	serverErrors := make(chan error, 1)
 	go func() {
 		log.Printf("HTTP Server listening on port %s", port)
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("[FATAL] Failed to start HTTP server: %v", err)
+			serverErrors <- err
 		}
 	}()
 
@@ -115,12 +138,12 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	log.Println("Server started. Press Ctrl+C to shutdown.")
 
-	// Block until a signal is received
-	<-quit
-	log.Println("Shutdown signal received.")
-
-	// Stop the scheduler
-	appScheduler.Stop() // Use appScheduler
+	select {
+	case <-quit:
+		log.Println("Shutdown signal received.")
+	case err := <-serverErrors:
+		log.Printf("[ERROR] HTTP server stopped unexpectedly: %v", err)
+	}
 
 	// Shutdown HTTP server gracefully
 	log.Println("Shutting down HTTP server...")
@@ -131,6 +154,10 @@ func main() {
 	if err := httpServer.Shutdown(ctx); err != nil {
 		log.Printf("[ERROR] HTTP server shutdown failed: %v", err)
 	}
+
+	// Once new HTTP-triggered jobs can no longer start, stop cron and wait for
+	// scheduler work to finish within its bounded shutdown window.
+	appScheduler.Stop()
 
 	log.Println("Server gracefully stopped.")
 }

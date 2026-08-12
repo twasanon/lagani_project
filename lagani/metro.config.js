@@ -4,11 +4,16 @@ const { withNativeWind } = require('nativewind/metro');
 // eslint-disable-next-line no-undef
 const config = getDefaultConfig(__dirname);
 
-// Add 'wasm' to asset extensions
-config.resolver.assetExts = [
-  ...config.resolver.assetExts,
-  'wasm',
-];
+config.resolver.assetExts.push('wasm');
+const nativeWindConfig = withNativeWind(config, { input: './global.css' });
 
-// Apply nativewind config *after* modifying assetExts
-module.exports = withNativeWind(config, { input: './global.css' }); 
+nativeWindConfig.server = {
+  ...nativeWindConfig.server,
+  enhanceMiddleware: (middleware) => (request, response, next) => {
+    response.setHeader('Cross-Origin-Embedder-Policy', 'credentialless');
+    response.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+    return middleware(request, response, next);
+  },
+};
+
+module.exports = nativeWindConfig;

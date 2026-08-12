@@ -1,92 +1,45 @@
-# Lagani - Nepal Finance App Tutorial
+# Lagani user guide
 
-This tutorial guides you through the main features of the Lagani app.
+## Home
 
-## 1. Overview
+Home shows the latest cached NEPSE market status, top gainers and losers, your manual portfolio summary, and a watchlist preview. Pull down to request a fresh validated snapshot from the Lagani API.
 
-Lagani helps you track your Nepal stock market investments, monitor market trends, stay updated with news, set price alerts, and practice trading with a virtual portfolio.
+Use Search to find a company by symbol or name. Use the bell to view active price alerts. Add Stock opens the Portfolio tab; News opens the news feed.
 
-## 2. Main Sections (Bottom Tabs)
+## Stock details
 
-The app is organized into several main sections accessible via the bottom tabs:
+Open a stock from search, movers, watchlist, portfolio, or paper trading. The screen shows the latest price and change, a selectable historical line chart, and available daily statistics. A `--` means the source did not provide that field; it is not a zero price.
 
-*   **Home:** Your dashboard showing market status, top movers, portfolio summary, and quick access via header icons to search (🔍) and view/manage active price alerts (🔔).
-*   **Portfolio:** Detailed view of your real stock holdings and transactions.
-*   **Paper:** A virtual trading simulator to practice buying and selling stocks.
-*   **Watchlist:** A list of stocks you want to monitor closely.
-*   **News:** Recent financial news headlines (fetched via the backend).
-*   **Settings:** App settings and options (currently basic).
+Use the heart to add or remove the stock from your local watchlist. Set Alert creates a local ABOVE or BELOW target. Sell is available only when the symbol exists in the manual portfolio.
 
-## 3. Key Features & How to Use Them
+## Manual portfolio
 
-### 3.1. Home Screen
+Tap + on Portfolio, select a company from search results, and enter a positive whole-share quantity and price. A sale cannot exceed the quantity held at that point in the transaction history.
 
-*   **Market Status:** See if the NEPSE market is currently Open or Closed.
-*   **Top Gainers/Losers:** Quickly view the day's top-performing and worst-performing stocks.
-*   **Portfolio Summary:** A snapshot of your total investment, current value, and overall profit/loss (based on manually entered transactions).
-*   **Header Actions:**
-    *   **Search (Magnifying Glass Icon 🔍):** Tap to reveal the search bar. Type a symbol or name, tap a result to view its `Stock Detail Screen`.
-    *   **Price Alerts (Bell Icon 🔔):** Tap to open the `Price Alerts Modal`. View active alerts and tap the trash icon (🗑️) to delete one.
-*   **Quick Action Buttons:**
-    *   **+ Add:** Tap to navigate to the Portfolio tab to record a new BUY/SELL transaction.
-    *   **News:** Tap to navigate to the News tab.
+Holdings use moving-average cost. The summary shows remaining cost basis, value at the cached latest price, and unrealized P/L. Tap a holding or its edit icon to inspect transactions. Editing or deleting an older transaction recalculates the full holding and is rejected if it would make a later sale invalid.
 
-### 3.2. Viewing Stock Details
+This ledger does not calculate brokerage, taxes, fees, settlement, or corporate actions.
 
-*   You can access the `Stock Detail Screen` for any stock by tapping it from search results, top movers, Watchlist, Portfolio, or Paper Trading.
-*   This screen shows detailed price information, basic stats (*note: some stats might be placeholders*), and a chart (*note: chart is currently a placeholder*).
-*   **Actions (Header Icons):**
-    *   **Watchlist (Star Icon ⭐/★):** Tap to add/remove the stock from your Watchlist.
-    *   **Set Alert (Bell Icon 🔔):** Tap to open the `Set Price Alert Modal` (see section 3.6).
-*   **Navigation Note:** When you navigate to the `Stock Detail Screen` from the `Home` screen (or elements originating from Home like search results or top movers), the bottom tabs remain visible due to the nested navigation structure. Accessing from Portfolio or Watchlist might behave differently based on the root navigation.
+## Paper trading
 
-### 3.3. Managing Your Portfolio
+The paper account starts with Rs. 1,000,000 virtual cash. Tap +, choose BUY or SELL, enter a valid NEPSE symbol and whole-share quantity, then tap the explicit Confirm Order button. Orders use the cached current market price.
 
-*   Go to the **Portfolio** tab.
-*   **Adding Transactions:** Use the "+ Add" button on the Home screen (which navigates here) or potentially a dedicated button on this screen in the future.
-    *   Select BUY or SELL.
-    *   Enter the Stock Symbol, Quantity, and Price per share.
-    *   Tap "Add Transaction".
-*   **Viewing Holdings:** Your holdings are grouped by stock symbol. You see the total quantity and average buy price. (*Current value/P&L display is pending*).
-*   **Viewing/Managing Individual Lots:** Tap on a stock symbol to expand it. Here you can see individual transactions and use the Sell (redirects to Sell Modal), Edit (✏️), or Delete (🗑️) icons for that specific lot.
-*   **History:** Tap the "Transaction History" button to view all past transactions.
+Cash, position, and history are updated together. Portfolio Value excludes cash; the charted paper equity includes cash plus current position value. Use Portfolio and History to switch views, and the range buttons to filter recorded equity history.
 
-### 3.4. Paper Trading
+## Watchlist
 
-*   Go to the **Paper** tab.
-*   **Virtual Balance & Reset:** Manage your virtual funds.
-*   **Placing Orders:** Enter Symbol and Quantity, tap Buy/Sell.
-*   **Viewing Paper Portfolio:** See virtual holdings.
-*   **Portfolio Chart:** Visualize paper portfolio performance.
-*   **Transaction History:** View simulated trades.
+Add a stock with the heart on Stock Details or the + control on Watchlist. Tap a row to open details. The trash control removes only that symbol from the watchlist.
 
-### 3.5. Using the Watchlist
+## News
 
-*   Go to the **Watchlist** tab.
-*   **Adding/Removing Stocks:** Use the star icon (⭐/★) on the `Stock Detail Screen`.
-*   **Viewing:** See current price and change for watched stocks.
+News comes from the backend's Merolagani and Nepalipaisa cache. A card shows the source and source-provided publication date when available. Opening an article is restricted to HTTPS links.
 
-### 3.6. Setting Price Alerts
+## Price alerts
 
-*   Navigate to the `Stock Detail Screen` for the desired stock.
-*   Tap the **Set Alert** bell icon (🔔) in the header.
-*   In the modal, enter the target price and choose the condition (Above/Below).
-*   Tap "Set Alert".
-*   **Notifications:** The app checks locally stored prices against your alerts periodically in the background and sends a notification if a condition is met.
-*   **Managing Alerts:** Use the **View Alerts** bell icon (🔔) on the `Home` screen header to open the modal where you can view and delete active alerts.
+Choose a target above or below the current price. In a signed Android or iOS build, Lagani asks the operating system to run a background check no more frequently than the configured minimum. The OS chooses the actual time, so notifications can be delayed or skipped. Web and Expo Go are not proof of native background behavior.
 
-### 3.7. Reading News
+## Settings and resets
 
-*   Go to the **News** tab.
-*   Displays recent headlines fetched from the backend cache (sourced from Merolagani & Nepalipaisa).
-*   Each item shows headline, source, image (using `expo-image`), and date (*Note: Dates may be missing for some sources*).
-*   **Read Full Article:** Tap a news card to open a modal with the article in a `WebView`.
+Settings can force a market refresh, open or reset the paper account, show help, and reset all personal local data. The full reset removes the watchlist, manual transactions, alerts, and paper activity but keeps the public market cache. Reset operations cannot be undone.
 
-## 4. Settings
-
-*   Go to the **Settings** tab.
-*   Provides basic options and the button to reset Paper Trading data.
-
----
-
-Enjoy using Lagani! 
+Lagani is an educational tracking and simulation tool, not investment advice or a broker, and is not affiliated with NEPSE.

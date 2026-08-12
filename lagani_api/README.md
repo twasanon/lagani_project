@@ -1,203 +1,272 @@
-# Lagani API Backend
+# Lagani API
 
-This directory contains the Go backend server for the Lagani React Native application.
+Lagani API is the market-data service for the Lagani Nepal investing app. It normalizes data from NEPSE, Merolagani, and Nepalipaisa into a stable REST API backed by a local SQLite cache. The cache decouples the mobile app and website from upstream outages, authentication changes, and HTML/API response differences.
 
-## Role
+This service is designed to run as **one stateful replica** while it uses SQLite. Read [DEPLOYMENT.md](DEPLOYMENT.md) before publishing it.
 
-- Acts as an intermediary between the mobile app and external data sources (NEPSE API, Merolagani, Nepalipaisa).
-- Handles NEPSE API authentication (including WASM token calculation).
-- Scrapes required data (company list, prices, market status, top movers, news, historical daily prices).
-- Caches scraped data in a local SQLite database (`lagani_cache.db`) for performance and resilience.
-- Provides simplified REST API endpoints for the mobile app to consume cached data.
-- Runs background tasks (using `gocron`) to periodically update the cached data.
+## Current audit status
 
-## Tech Stack
+The August 2026 backend audit repaired the runtime schema, NEPSE historical request, Nepalipaisa ingestion, weekly aggregation, scheduler overlap, and public admin-route issues. Unit, HTTP, repository, race, live-source, and process smoke tests now cover the critical paths. The evidence and remaining operational risks are recorded in [AUDIT.md](AUDIT.md).
 
-- **Language:** Go
-- **Web Framework/Router:** Chi (v5)
-- **Database:** SQLite (using `mattn/go-sqlite3` driver)
-- **Scheduling:** `robfig/cron/v3`
-- **HTML Parsing:** `PuerkitoBio/goquery`
-- **NEPSE Auth:** `wasmerio/wasmer-go` (for running WASM)
-- **Configuration:** Environment Variables (optionally via `.env` file)
+## Responsibilities
 
-## Project Structure
+- Authenticate against NEPSE using its proof response and `css.wasm` token transformation.
+- Cache active companies, latest prices, market status, top ten gainers/losers, historical prices, and news.
+- Cache Merolagani daily OHLCV and pre-aggregate it into NEPSE-aligned weekly and monthly candles.
+- Return consistent JSON to the Expo app and website.
+- Keep cached data fresh through Asia/Kathmandu cron schedules.
+- Preserve usable last-known values when a source or market is unavailable.
 
+## Architecture
+
+```text
+NEPSE ───────────────┐
+Merolagani ──────────┼─> scraper layer ─> scheduler ─> SQLite cache
+Nepalipaisa JSON API ┘                                  │
+                                                       v
+Expo app / website <──────────── Chi REST API <─────────┘
 ```
+
+The detailed component and data-flow description is in [how_it_works.md](how_it_works.md).
+
+## Technology
+
+- Go 1.23
+- Chi 5 HTTP router and middleware
+- SQLite through `mattn/go-sqlite3` (CGO is required)
+- `robfig/cron/v3` with seconds and Asia/Kathmandu timezone
+- Goquery for Merolagani HTML parsing
+- Wasmer Go for NEPSE's WebAssembly token calculation
+
+## Repository layout
+
+```text
 lagani_api/
-├── cmd/server/main.go    # Application entry point, DI, server/scheduler start
-├── internal/             # Internal packages
-│   ├── api/              # HTTP handlers and router setup
-│   ├── database/         # DB connection, migration, repositories (SQL logic)
-│   ├── models/           # Core data structures (structs)
-│   ├── scraper/          # Data scraping logic (NEPSE, Merolagani, etc.)
-│   └── scheduler/        # Background task scheduling (cron jobs)
-├── go.mod                # Go module definition
-├── go.sum                # Dependency checksums
-├── lagani_cache.db       # SQLite database file (created on first run)
-├── css.wasm              # WASM binary required for NEPSE authentication
-├── .env.example          # Example environment variables file (Copy to .env)
-├── .gitignore
-└── README.md             # This file
+├── cmd/server/                 production entry point
+├── cmd/chart_test/             manual Merolagani diagnostic
+├── cmd/test_hist_endpoint/     manual NEPSE diagnostic
+├── internal/api/               router, middleware, handlers
+├── internal/database/          schema and repositories
+├── internal/models/            public/domain data structures
+├── internal/scheduler/         cron orchestration and aggregation
+├── internal/scraper/           NEPSE, Merolagani, Nepalipaisa clients
+├── css.wasm                    NEPSE token transformation module
+├── Dockerfile                  production container
+├── Makefile                    local verification commands
+├── AUDIT.md                    findings, fixes, and remaining risks
+├── DEPLOYMENT.md               production runbook
+└── how_it_works.md             detailed architecture
 ```
 
-## Setup & Running
+## Local setup
 
-1.  **Prerequisites:**
-    *   Go (version specified in `go.mod`)
-    *   Ensure `css.wasm` file is present in this directory.
+Prerequisites:
 
-2.  **Install Dependencies:**
-    ```bash
-    go mod tidy
-    ```
+- Go 1.23.x with a working C compiler because the SQLite driver and Wasmer use CGO.
+- `css.wasm` present at the configured `WASM_FILE` path.
+- Network access to the three upstream sources for live ingestion.
 
-3.  **Configuration (.env File - Optional but Recommended):**
-    *   Copy `.env.example` to `.env`.
-    *   Review and adjust the values in `.env` if needed (defaults are provided).
-    *   Key variables include `PORT`, `DB_FILE`, `WASM_FILE`, various scraper URLs, and cron `SCHEDULE` strings.
+Copy the environment template and export it with your preferred environment manager:
 
-4.  **Running the Server:**
-    *   **Without `.env` (uses defaults):**
-        ```bash
-        go run cmd/server/main.go
-        ```
-    *   **With `.env` (using `godotenv` tool):**
-        *   Install tool: `go install github.com/joho/godotenv/cmd/godotenv@latest`
-        *   Run: `godotenv -f .env go run cmd/server/main.go`
-    *   **With `.env` (manual export):**
-        ```bash
-        export $(grep -v '^#' .env | xargs)
-        go run cmd/server/main.go
-        ```
+```bash
+cp .env.example .env
+```
 
-5.  **Server Status:**
-    *   The server will log startup information, including the port it's listening on (default 8080).
-    *   It will run initial scrapes and then start the scheduled background tasks.
-    *   API endpoints will be available (e.g., `http://localhost:8080/companies`).
-    *   Press `Ctrl+C` for graceful shutdown.
+The Go process intentionally reads the process environment; it does not silently load `.env`. One option is the `godotenv` command:
 
-## Configuration Variables (.env)
+```bash
+go install github.com/joho/godotenv/cmd/godotenv@latest
+godotenv -f .env go run ./cmd/server
+```
 
-See `.env.example` for a list of configurable environment variables and their default values. These control the server port, database file location, WASM file location, external API URLs, and cron job schedules.
+For a fast API-only local run without upstream startup work:
 
-## API Endpoints
+```bash
+SCHEDULER_ENABLED=false DB_FILE=./data/dev.db go run ./cmd/server
+```
 
-- `GET /ping`: Health check.
-- `GET /companies`: Returns list of active companies.
-- `GET /prices`: Returns latest price statistics for all companies.
-- `GET /market-status`: Returns current NEPSE market status.
-- `GET /top-gainers`: Returns latest list of top gaining stocks.
-- `GET /top-losers`: Returns latest list of top losing stocks.
-- `GET /news`: Returns recent news items (optional `?limit=N` parameter).
-- `GET /historical-price/{securityId}`: Returns cached historical daily price data for a specific company (sourced from NEPSE).
-- `GET /charts/{symbol}`: Returns historical chart data (OHLCV) for a specific company symbol.
-    - **Source:** Merolagani
-    - **Query Parameters:**
-        - `range`: Specifies the time window for the data. Supported values: `1d`, `1w`, `1m`, `ytd`, `1y`, `all`. Defaults to `1y` if not provided.
-        - `resolution`: Specifies the granularity of data points. Supported values: `D` (Daily), `W` (Weekly), `M` (Monthly).
-            - If not provided, resolution is automatically selected based on the `range`:
-                - `range` <= 90 days: Defaults to 'D'.
-                - `range` > 90 days and <= 2 years: Defaults to 'W'.
-                - `range` > 2 years: Defaults to 'M'.
-            - Invalid `resolution` values also default to 'D'.
-- `POST /admin/update-historical-data`: Manually triggers a background job to fetch and update historical price data for all known companies.
-- `POST /admin/update-prices`: Manually triggers a forced price update job that bypasses market status checks.
-- `POST /admin/update-chart-data`: Manually triggers the Merolagani chart data update job.
-- `POST /admin/update-all-data`: Manually triggers all primary data scraping jobs.
+Then check:
 
-## Caching & Scheduling
+```bash
+curl http://localhost:8080/healthz
+curl http://localhost:8080/readyz
+```
 
-- The server caches data fetched from external sources in the `lagani_cache.db` SQLite database.
-- Background cron jobs (defined in `internal/scheduler/`) automatically run at configured intervals (see `.env` `*_SCHEDULE` variables) to:
-    - Update the company list.
-    - Update current price statistics.
-    - Update market status.
-    - Update top movers.
-    - Scrape and update news items from configured sources.
-    - Scrape and update historical daily price data (from NEPSE for `/historical-price`).
-    - Scrape and update daily chart data from Merolagani, and pre-aggregate it into weekly and monthly views for the `/charts` endpoint.
-- This ensures the mobile app primarily interacts with the local cache, improving performance and reducing reliance on external APIs.
+## Configuration
 
-## Chart Data Handling: Nuances and Intricacies
+All values are optional unless production guidance says otherwise. Defaults are shown in `.env.example` and in code.
 
-The `/charts/{symbol}` endpoint and its underlying data pipeline have several important characteristics:
+### Server and security
 
-### 1. Data Source & Primary Storage
+| Variable | Meaning |
+| --- | --- |
+| `PORT` | HTTP port, default `8080`. |
+| `CORS_ALLOWED_ORIGINS` | Comma-separated web-client origins. Localhost and Expo origins are the development default. Set only the exact deployed Expo web origin if that client is published; native iOS/Android and the static marketing site do not need CORS access. |
+| `ADMIN_API_KEY` | Secret accepted through `X-Admin-Key` or `Authorization: Bearer`. If empty, every `/admin/*` route returns `503`; it is never publicly open. |
+| `DB_FILE` | SQLite path. Parent directories are created with restricted permissions. Use a persistent-volume path in production. |
+| `WASM_FILE` | Path to `css.wasm`. |
+| `SCHEDULER_ENABLED` | Enables cron registration. Disable on API-only/non-leader processes. |
+| `STARTUP_JOBS_ENABLED` | Enables initial company, status, price, mover, news, and closed-market chart refresh. |
 
-- **Source:** Historical OHLCV (Open, High, Low, Close, Volume) data is primarily sourced from **Merolagani**.
-- **`chart_data` Table:**
-    - Raw daily data fetched from Merolagani is stored in the `chart_data` table.
-    - Each data point's `timestamp` field stores a **Unix timestamp in seconds (UTC)**, representing the start of the trading day (typically 00:00:00 UTC for that date).
-    - This table serves as the source of truth for all finer-grained data and for aggregations.
-    - Data is inserted with `ON CONFLICT DO NOTHING` to prevent duplicates based on `(company_symbol, source, timestamp)`.
+### Source URLs
 
-### 2. Pre-Aggregated Data for Performance
+All source base URLs and relevant paths can be overridden. This is primarily for upstream migrations and controlled tests. Important settings include:
 
-To optimize API response times for common longer-range views, daily data is pre-aggregated by the scheduler:
+- `NEPSE_BASE_URL`, `NEPSE_PROVE_PATH`, `NEPSE_COMPANY_LIST_PATH`
+- `NEPSE_DAILY_STATS_PATH`, `NEPSE_MARKET_STATUS_PATH`
+- `NEPSE_TOP_GAINERS_PATH`, `NEPSE_TOP_LOSERS_PATH`
+- `NEPSE_HISTORICAL_PRICE_PATH_FORMAT`
+- `MEROLAGANI_BASE_URL`, `MEROLAGANI_NEWS_PATH`, `MEROLAGANI_CHART_PATH`
+- `NEPALIPAISA_BASE_URL`, `NEPALIPAISA_NEWS_API_PATH`
 
-- **`chart_data_weekly` Table:**
-    - Stores weekly aggregated OHLCV data.
-    - `timestamp` is a Unix timestamp (seconds, UTC) representing the start of the week (Monday, 00:00:00 UTC).
-    - Aggregation logic:
-        - `open`: The `open` of the first daily point in the week.
-        - `high`: The maximum `high` of all daily points in the week.
-        - `low`: The minimum `low` of all daily points in the week.
-        - `close`: The `close` of the last daily point in the week.
-        - `volume`: The sum of `volume` of all daily points in the week.
-- **`chart_data_monthly` Table:**
-    - Stores monthly aggregated OHLCV data.
-    - `timestamp` is a Unix timestamp (seconds, UTC) representing the start of the month (1st day, 00:00:00 UTC).
-    - Aggregation logic is similar to weekly, but applied over a calendar month.
-- **Upsert Logic:** Aggregated data is saved using an "upsert" mechanism (`INSERT ... ON CONFLICT DO UPDATE`). If a record for a given symbol, source, and timestamp already exists, it's updated; otherwise, a new record is inserted.
+### Scheduler
 
-### 3. Scheduler's Role (`updateMerolaganiChartDataJob`)
+Cron expressions contain six fields, including seconds, and are interpreted in `Asia/Kathmandu`. Defaults reflect NEPSE's Sunday-Thursday week and stagger requests to avoid bursts:
 
-This background job is crucial for maintaining the chart data:
+| Job | Default behavior |
+| --- | --- |
+| Market status | Every 2 minutes, 10:00-15:59 NPT, Sunday-Thursday. |
+| Prices | Every 5 minutes, 11:00-14:59 NPT, staggered at second 15. |
+| Gainers / losers | Every 5 minutes during market hours, staggered at seconds 30 and 45. |
+| Closing snapshots | Forced price, gainer, and loser refreshes at 15:05-15:07 NPT. |
+| Companies | Daily at 02:00 NPT. |
+| News | Daily at 06:00 and 18:00 NPT. |
+| NEPSE historical prices | Daily at 18:00 NPT. |
+| Merolagani chart data | Daily at 00:05 NPT. |
 
-- **Daily Data Fetching:**
-    - For each company, it checks the latest timestamp in the `chart_data` table.
-    - It then fetches new daily data from Merolagani incrementally (from the last known timestamp or from a very early date like Jan 1, 2000, for initial population).
-    - Fetched daily data is saved into the `chart_data` table.
-- **Optimized Range-Based Re-aggregation:**
-    - After new daily data is saved for a set of symbols, the job identifies which symbols had updates.
-    - For these updated symbols, it determines the affected time range for re-aggregation into `chart_data_weekly` and `chart_data_monthly`. This is typically from the start of the week/month of the oldest new daily point.
-    - It fetches the necessary daily data from `chart_data` for this range.
-    - Local aggregation functions (`aggregateToWeekly`, `aggregateToMonthly`) process this daily data.
-    - The resulting aggregated points are then saved (upserted) into `chart_data_weekly` and `chart_data_monthly`. This avoids recalculating entire aggregated tables on every run, improving efficiency.
-- **Scheduling:** The job runs daily and also on application startup to ensure data freshness.
+Invalid cron expressions stop scheduler startup rather than leaving a partly scheduled service.
 
-### 4. API Endpoint Behavior (`GET /charts/{symbol}`)
+## Public API
 
-- **`range` Parameter:** Defines the overall time window for the chart (e.g., "1m" for one month, "1y" for one year). Default is "1y".
-    - `1d`: Last 7 calendar days (to provide some context around a single "day" view).
-    - `1w`: Last 7 calendar days.
-    - `1m`: Last 1 month.
-    - `ytd`: Year to date.
-    - `1y`: Last 1 year.
-    - `all`: From earliest available data (Jan 1, 2000, as a practical lower bound) to now.
-- **`resolution` Parameter:** Defines the granularity of the data points (candles) returned.
-    - `D`: Daily data.
-    - `W`: Weekly data.
-    - `M`: Monthly data.
-- **Automatic Resolution Logic:**
-    - If the `resolution` query parameter is **not** provided by the client, the API automatically selects an optimal resolution based on the requested `range`'s duration:
-        - Duration <= 90 days: Resolution defaults to `D`.
-        - Duration > 90 days and <= 2 years: Resolution defaults to `W`.
-        - Duration > 2 years: Resolution defaults to `M`.
-    - If an invalid `resolution` is provided (e.g., "X"), it defaults to `D`.
-- **Data Fetching:** Based on the final `resolution` (explicitly provided or automatically determined), the API queries the corresponding database table:
-    - `D` -> `chart_data`
-    - `W` -> `chart_data_weekly`
-    - `M` -> `chart_data_monthly`
-- **Timestamps in Response:** All timestamps (`t`) in the JSON response are Unix timestamps in seconds (UTC), consistent with the database storage.
+All JSON timestamps are RFC 3339 UTC strings except chart timestamps, which are Unix seconds UTC.
 
-## Current Status
+### Operational endpoints
 
-- The backend is refactored into structured packages.
-- Core functionalities (scraping, caching, scheduling, API endpoints for market data, news) are implemented.
-- **Key Feature:** Comprehensive chart data functionality via `GET /charts/{symbol}` is implemented, sourcing data from Merolagani, with pre-aggregation into daily, weekly, and monthly views for optimized performance. The system uses Unix timestamps (seconds, UTC) throughout the chart data pipeline.
-- **Price Data Fix:** Successfully resolved issues with price data not being saved when market is closed. The system now properly fetches and stores last known prices from NEPSE API even outside market hours.
-- **Manual Triggers:** Added admin endpoints for manually triggering data updates, including forced price updates that bypass market status checks.
-- **Database Status:** Currently serving 249 price records for active stocks out of 364 total companies.
-- The `/historical-price/{securityId}` endpoint (NEPSE sourced) remains for other historical data needs. 
+| Method | Path | Behavior |
+| --- | --- | --- |
+| `GET` | `/ping` | Minimal Chi heartbeat. |
+| `GET` | `/healthz` | Process liveness; returns `{"status":"ok"}`. |
+| `GET` | `/readyz` | Verifies the SQLite connection before returning ready. |
+
+### Market endpoints
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| `GET` | `/companies` | Active companies ordered by symbol. |
+| `GET` | `/prices` | Latest cached price per symbol. Last-known values remain available outside market hours. |
+| `GET` | `/market-status` | Latest NEPSE status and source `asOf` time normalized to UTC. Returns `404` until first ingestion. |
+| `GET` | `/top-gainers` | Latest top ten gainers. |
+| `GET` | `/top-losers` | Latest top ten losers. |
+| `GET` | `/news?limit=50` | Merged news ordered by publication time. `limit` must be 1-100. |
+| `GET` | `/historical-price/{securityId}` | NEPSE graph history for a positive numeric security ID. |
+| `GET` | `/charts/{symbol}` | Merolagani OHLCV for a known company symbol. |
+
+Empty collection endpoints return `[]`, not `null`. Errors use this stable form:
+
+```json
+{"error":"Human-readable message"}
+```
+
+### Chart query contract
+
+`GET /charts/NABIL?range=1y&resolution=W`
+
+Supported ranges:
+
+- `1d`: the latest available candle, found with a 30-calendar-day holiday-safe lookup
+- `1w`, `1m`, `3m`, `6m`, `ytd`, `1y`, `5y`, `all`
+
+Supported resolutions:
+
+- `D`: daily
+- `W`: NEPSE week, starting Sunday
+- `M`: calendar month
+
+If resolution is omitted:
+
+- up to 90 days uses daily
+- over 90 days through 2 years uses weekly
+- over 2 years uses monthly
+
+Invalid values return `400`; the API does not silently substitute a different resolution. Responses include `X-Chart-Resolution` and `X-Data-Source` headers.
+
+Chart point format:
+
+```json
+{"t":1786406400,"o":550.0,"h":556.0,"l":549.0,"c":551.0,"v":26088.0}
+```
+
+## Admin API
+
+Admin routes enqueue exclusive background work and return `202`. A duplicate or conflicting refresh returns `409`, preventing accidental concurrent full backfills.
+
+```bash
+curl -X POST \
+  -H "X-Admin-Key: $ADMIN_API_KEY" \
+  http://localhost:8080/admin/update-prices
+```
+
+Routes:
+
+- `POST /admin/update-prices`
+- `POST /admin/update-historical-data`
+- `POST /admin/update-chart-data`
+- `POST /admin/update-all-data`
+
+Never place `ADMIN_API_KEY` in the Expo app or website bundle.
+
+## Database behavior
+
+SQLite runs with foreign keys, WAL, a 5-second busy timeout, normal synchronous mode, and one in-process pooled connection. This avoids intermittent writer-lock failures from concurrent scheduler jobs.
+
+Core tables:
+
+- `companies`
+- `prices`
+- `market_status`
+- `movers`
+- `news_items`
+- `historical_prices`
+- `chart_data`
+- `chart_data_weekly`
+- `chart_data_monthly`
+
+Company updates use `ON CONFLICT DO UPDATE`. Do not change this to `INSERT OR REPLACE`: SQLite `REPLACE` deletes the old parent row and would cascade-delete prices and chart history.
+
+The startup migration also recognizes the incompatible early `historical_prices` layout and moves its data into the canonical schema transactionally.
+
+## Verification
+
+Fast deterministic suite:
+
+```bash
+make test
+make vet
+make test-race
+```
+
+Live upstream contract suite:
+
+```bash
+make test-live
+```
+
+Live tests contact all production sources and should run as a scheduled canary, not on every pull request. They currently verify both news sources, Merolagani NABIL and long-range NMB50 chart windows (including positive/consistent candle invariants), the NEPSE historical challenge body, and core NEPSE company/status/price/mover responses.
+
+## Deployment
+
+Build the production container:
+
+```bash
+docker build --platform linux/amd64 -t lagani-api .
+```
+
+The image runs as a non-root user, expects persistent SQLite storage at `/data`, and exposes port 8080. It is currently Linux/AMD64-only because the pinned `wasmer-go` release does not enable its bundled Linux ARM64 linker path. Use `--platform linux/amd64` on both build and run when the host is ARM-based. See [DEPLOYMENT.md](DEPLOYMENT.md) for required secrets, health checks, backup/restore, first backfill, monitoring, and rollback.
+
+## Known operational constraints
+
+- NEPSE and Merolagani contracts are not stable public APIs. The live contract suite is the early-warning mechanism.
+- The NEPSE graph challenge contains a static table mirrored from the official web client. A client-bundle change can require a code update.
+- SQLite means one stateful writer replica. Move to PostgreSQL before horizontal API scaling.
+- Source availability and permission/terms must be reviewed before commercial production use.
+- Financial data is informational; clients should display source time and appropriate disclaimers rather than implying exchange-certified real-time data.

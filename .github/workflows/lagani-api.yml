@@ -1,0 +1,64 @@
+name: Lagani API
+
+on:
+  push:
+    paths:
+      - "lagani_api/**"
+      - ".github/workflows/lagani-api.yml"
+  pull_request:
+    paths:
+      - "lagani_api/**"
+      - ".github/workflows/lagani-api.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: lagani_api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: lagani_api/go.mod
+          cache-dependency-path: lagani_api/go.sum
+      - run: go test -race ./...
+      - run: go vet ./...
+      - run: go build -trimpath ./cmd/server
+
+  container:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: lagani_api
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build --platform linux/amd64 --tag lagani-api:test .
+      - name: Smoke-test production image
+        run: |
+          set -euo pipefail
+          docker run --detach --name lagani-api-ci \
+            --publish 18080:8080 \
+            --env DB_FILE=/data/lagani.db \
+            --env SCHEDULER_ENABLED=false \
+            lagani-api:test
+          cleanup() {
+            docker logs lagani-api-ci || true
+            docker rm --force lagani-api-ci || true
+          }
+          trap cleanup EXIT
+          ready=0
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:18080/healthz >/dev/null; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          test "$ready" = 1
+          curl --fail --silent http://127.0.0.1:18080/readyz >/dev/null
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            --request POST http://127.0.0.1:18080/admin/update-prices)" = 503

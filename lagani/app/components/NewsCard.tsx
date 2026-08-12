@@ -8,6 +8,7 @@ interface NewsCardProps {
   title: string;
   imageUrl: string;
   date?: string;
+  source?: string;
   onPress?: () => void;
 }
 
@@ -15,6 +16,7 @@ const NewsCard: React.FC<NewsCardProps> = ({
   title,
   imageUrl,
   date,
+  source,
   onPress
 }) => {
   const hasImage = imageUrl && imageUrl.trim() !== '';
@@ -24,6 +26,8 @@ const NewsCard: React.FC<NewsCardProps> = ({
       className="flex-row p-4 mb-3 bg-card rounded-lg shadow-sm border border-border"
       onPress={onPress}
       activeOpacity={0.7}
+      accessibilityRole="link"
+      accessibilityLabel={`Read ${title}`}
     >
       {hasImage ? (
         <Image 
@@ -44,12 +48,12 @@ const NewsCard: React.FC<NewsCardProps> = ({
       )}
       <View className="flex-1 ml-3">
         <Text className="text-base font-medium mb-1 text-text" numberOfLines={2}>{title}</Text>
-        {date && (
-          <Text className="text-xs text-textSecondary mt-auto">{date}</Text>
-        )}
+        <Text className="text-xs text-textSecondary mt-auto" numberOfLines={1}>
+          {[source, date].filter(Boolean).join(' • ')}
+        </Text>
       </View>
     </TouchableOpacity>
   );
 };
 
-export default NewsCard; 
+export default NewsCard;

@@ -2,9 +2,12 @@ package scheduler
 
 import (
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -26,6 +29,19 @@ func getEnvScheduler(key, fallback string) string {
 	return fallback
 }
 
+func getEnvBoolScheduler(key string, fallback bool) bool {
+	value, exists := os.LookupEnv(key)
+	if !exists || strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseBool(strings.TrimSpace(value))
+	if err != nil {
+		log.Printf("[WARN] Invalid boolean %s=%q; using %t", key, value, fallback)
+		return fallback
+	}
+	return parsed
+}
+
 func init() {
 	// Load Nepal time zone once on package initialization
 	loc, err := time.LoadLocation("Asia/Kathmandu")
@@ -45,6 +61,9 @@ type Scheduler struct {
 	companyRepo         *database.CompanyRepository
 	historicalPriceRepo *database.HistoricalPriceRepository
 	chartRepo           *database.ChartRepository
+	jobMu               sync.Mutex
+	runningJobs         map[string]bool
+	jobWG               sync.WaitGroup
 }
 
 // NewScheduler creates a new Scheduler instance.
@@ -59,6 +78,10 @@ func NewScheduler(
 	c := cron.New(
 		cron.WithLocation(nptLocation),
 		cron.WithSeconds(),
+		cron.WithChain(
+			cron.SkipIfStillRunning(cron.DefaultLogger),
+			cron.Recover(cron.DefaultLogger),
+		),
 	)
 	log.Printf("Cron scheduler initialized with timezone: %s", nptLocation.String())
 	return &Scheduler{
@@ -69,7 +92,54 @@ func NewScheduler(
 		companyRepo:         compRepo,
 		historicalPriceRepo: histRepo,
 		chartRepo:           chartRepo,
+		runningJobs:         make(map[string]bool),
 	}
+}
+
+func (s *Scheduler) tryBeginJob(name string) bool {
+	s.jobMu.Lock()
+	defer s.jobMu.Unlock()
+	if s.runningJobs[name] || s.runningJobs["all"] {
+		return false
+	}
+	if name == "all" {
+		for _, running := range s.runningJobs {
+			if running {
+				return false
+			}
+		}
+	}
+	s.runningJobs[name] = true
+	return true
+}
+
+func (s *Scheduler) endJob(name string) {
+	s.jobMu.Lock()
+	delete(s.runningJobs, name)
+	s.jobMu.Unlock()
+}
+
+func (s *Scheduler) runExclusive(name string, job func()) bool {
+	if !s.tryBeginJob(name) {
+		log.Printf("[Scheduler][Skip] Job %s is already running or a full refresh is active.", name)
+		return false
+	}
+	defer s.endJob(name)
+	job()
+	return true
+}
+
+func (s *Scheduler) startExclusive(name string, job func()) bool {
+	if !s.tryBeginJob(name) {
+		return false
+	}
+	s.jobWG.Add(1)
+	go func() {
+		defer s.jobWG.Done()
+		defer s.endJob(name)
+		job()
+	}()
+	return true
 }
 
 // isMarketHoursNPT checks if the given time is within NEPSE market hours (Sun-Thu, 11:00 AM - 2:59 PM NPT).
@@ -77,137 +147,150 @@ func NewScheduler(
 // func isMarketHoursNPT(t time.Time) bool { ... }
 
 // Start registers and starts the scheduled jobs.
-func (s *Scheduler) Start() {
+func (s *Scheduler) Start() error {
 	log.Println("Starting scheduler...")
 
 	// --- Define Job Functions Wrappers ---
 
 	scrapeMarketStatus := func() {
-		log.Println("[Scheduler] Running job: ScrapeMarketStatus")
-		if err := s.nepseScraper.ScrapeMarketStatus(); err != nil {
-			log.Printf("[ERROR][Scheduler] Failed to scrape market status: %v", err)
-		}
+		s.runExclusive("market-status", func() {
+			log.Println("[Scheduler] Running job: ScrapeMarketStatus")
+			if err := s.nepseScraper.ScrapeMarketStatus(); err != nil {
+				log.Printf("[ERROR][Scheduler] Failed to scrape market status: %v", err)
+			}
+		})
 	}
 
-	scrapePrices := func() { s.runScrapePricesInternal("[Scheduler]", false) }
-	scrapeGainers := func() { s.runScrapeGainersInternal("[Scheduler]") }
-	scrapeLosers := func() { s.runScrapeLosersInternal("[Scheduler]") }
+	scrapePrices := func() {
+		s.runExclusive("prices", func() { s.runScrapePricesInternal("[Scheduler]", false) })
+	}
+	scrapeClosePrices := func() {
+		s.runExclusive("prices", func() { s.runScrapePricesInternal("[Scheduler][Close Snapshot]", true) })
+	}
+	scrapeGainers := func() {
+		s.runExclusive("gainers", func() { s.runScrapeGainersInternal("[Scheduler]", false) })
+	}
+	scrapeLosers := func() {
+		s.runExclusive("losers", func() { s.runScrapeLosersInternal("[Scheduler]", false) })
+	}
+	scrapeCloseGainers := func() {
+		s.runExclusive("gainers", func() { s.runScrapeGainersInternal("[Scheduler][Close Snapshot]", true) })
+	}
+	scrapeCloseLosers := func() {
+		s.runExclusive("losers", func() { s.runScrapeLosersInternal("[Scheduler][Close Snapshot]", true) })
+	}
 
 	scrapeCompanies := func() {
-		log.Println("[Scheduler] Running job: ScrapeCompanies")
-		if err := s.nepseScraper.ScrapeCompanies(); err != nil {
-			log.Printf("[ERROR][Scheduler] Failed to scrape companies: %v", err)
-		}
+		s.runExclusive("companies", func() {
+			log.Println("[Scheduler] Running job: ScrapeCompanies")
+			if err := s.nepseScraper.ScrapeCompanies(); err != nil {
+				log.Printf("[ERROR][Scheduler] Failed to scrape companies: %v", err)
+			}
+		})
 	}
 
 	scrapeMerolaganiNews := func() {
-		log.Println("[Scheduler] Running job: ScrapeMerolaganiNews")
-		if err := s.merolaganiScraper.ScrapeNews(); err != nil {
-			log.Printf("[ERROR][Scheduler] Failed to scrape Merolagani news: %v", err)
-		}
+		s.runExclusive("merolagani-news", func() {
+			log.Println("[Scheduler] Running job: ScrapeMerolaganiNews")
+			if err := s.merolaganiScraper.ScrapeNews(); err != nil {
+				log.Printf("[ERROR][Scheduler] Failed to scrape Merolagani news: %v", err)
+			}
+		})
 	}
 
 	scrapeNepalipaisaNews := func() {
-		log.Println("[Scheduler] Running job: ScrapeNepalipaisaNews")
-		if err := s.nepalipaisaScraper.ScrapeNews(); err != nil {
-			log.Printf("[ERROR][Scheduler] Failed to scrape Nepalipaisa news: %v", err)
-		}
+		s.runExclusive("nepalipaisa-news", func() {
+			log.Println("[Scheduler] Running job: ScrapeNepalipaisaNews")
+			if err := s.nepalipaisaScraper.ScrapeNews(); err != nil {
+				log.Printf("[ERROR][Scheduler] Failed to scrape Nepalipaisa news: %v", err)
+			}
+		})
 	}
 
-	scrapeHistoricalData := func() { s.runScrapeHistoricalDataInternal("[Scheduler]") }
+	scrapeHistoricalData := func() {
+		s.runExclusive("historical", func() { s.runScrapeHistoricalDataInternal("[Scheduler]") })
+	}
 
-	updateMerolaganiChartDataJob := func() { s.executeMerolaganiChartUpdate("[Scheduler]") }
+	updateMerolaganiChartDataJob := func() {
+		s.runExclusive("charts", func() { s.executeMerolaganiChartUpdate("[Scheduler]") })
+	}
 
 	// --- Register Jobs with Schedules (Times interpreted in Asia/Kathmandu) ---
 	log.Println("Registering scheduled jobs...")
 
-	_, err := s.cronRunner.AddFunc(getEnvScheduler("MARKET_STATUS_SCHEDULE", "0 */30 * * * *"), scrapeMarketStatus)
-	if err != nil {
-		log.Printf("[ERROR] Failed to add scrapeMarketStatus job: %v", err)
+	jobs := []struct {
+		name     string
+		schedule string
+		job      func()
+	}{
+		{"market status", getEnvScheduler("MARKET_STATUS_SCHEDULE", "0 */2 10-15 * * 0-4"), scrapeMarketStatus},
+		{"prices", getEnvScheduler("PRICE_SCHEDULE", "15 */5 11-14 * * 0-4"), scrapePrices},
+		{"top gainers", getEnvScheduler("GAINER_SCHEDULE", "30 */5 11-14 * * 0-4"), scrapeGainers},
+		{"top losers", getEnvScheduler("LOSER_SCHEDULE", "45 */5 11-14 * * 0-4"), scrapeLosers},
+		{"closing prices", getEnvScheduler("MARKET_CLOSE_PRICE_SCHEDULE", "0 5 15 * * 0-4"), scrapeClosePrices},
+		{"closing gainers", getEnvScheduler("MARKET_CLOSE_GAINER_SCHEDULE", "0 6 15 * * 0-4"), scrapeCloseGainers},
+		{"closing losers", getEnvScheduler("MARKET_CLOSE_LOSER_SCHEDULE", "0 7 15 * * 0-4"), scrapeCloseLosers},
+		{"companies", getEnvScheduler("COMPANY_SCHEDULE", "0 0 2 * * *"), scrapeCompanies},
+		{"Merolagani news", getEnvScheduler("NEWS_SCHEDULE", "0 0 6,18 * * *"), scrapeMerolaganiNews},
+		{"Nepalipaisa news", getEnvScheduler("NEWS_SCHEDULE", "0 0 6,18 * * *"), scrapeNepalipaisaNews},
+		{"historical prices", getEnvScheduler("HISTORICAL_PRICE_SCHEDULE", "0 0 18 * * *"), scrapeHistoricalData},
+		{"Merolagani charts", getEnvScheduler("MEROLAGANI_CHART_SCHEDULE", "0 5 0 * * *"), updateMerolaganiChartDataJob},
 	}
-
-	_, err = s.cronRunner.AddFunc(getEnvScheduler("PRICE_SCHEDULE", "0 0 * * * *"), scrapePrices)
-	if err != nil {
-		log.Printf("[ERROR] Failed to add scrapePrices job: %v", err)
-	}
-
-	_, err = s.cronRunner.AddFunc(getEnvScheduler("GAINER_SCHEDULE", "0 1 * * * *"), scrapeGainers)
-	if err != nil {
-		log.Printf("[ERROR] Failed to add scrapeGainers job: %v", err)
-	}
-
-	_, err = s.cronRunner.AddFunc(getEnvScheduler("LOSER_SCHEDULE", "0 2 * * * *"), scrapeLosers)
-	if err != nil {
-		log.Printf("[ERROR] Failed to add scrapeLosers job: %v", err)
-	}
-
-	_, err = s.cronRunner.AddFunc(getEnvScheduler("COMPANY_SCHEDULE", "0 0 2 * * *"), scrapeCompanies)
-	if err != nil {
-		log.Printf("[ERROR] Failed to add scrapeCompanies job: %v", err)
-	}
-
-	newsSchedule := getEnvScheduler("NEWS_SCHEDULE", "0 0 6,18 * * *")
-	_, err = s.cronRunner.AddFunc(newsSchedule, scrapeMerolaganiNews)
-	if err != nil {
-		log.Printf("[ERROR] Failed to add scrapeMerolaganiNews job: %v", err)
-	}
-	_, err = s.cronRunner.AddFunc(newsSchedule, scrapeNepalipaisaNews)
-	if err != nil {
-		log.Printf("[ERROR] Failed to add scrapeNepalipaisaNews job: %v", err)
-	}
-
-	_, err = s.cronRunner.AddFunc(getEnvScheduler("HISTORICAL_PRICE_SCHEDULE", "0 0 18 * * *"), scrapeHistoricalData)
-	if err != nil {
-		log.Printf("[ERROR] Failed to add scrapeHistoricalData job: %v", err)
-	}
-
-	_, err = s.cronRunner.AddFunc(getEnvScheduler("MEROLAGANI_CHART_SCHEDULE", "0 5 0 * * *"), updateMerolaganiChartDataJob)
-	if err != nil {
-		log.Printf("[ERROR] Failed to add updateMerolaganiChartDataJob: %v", err)
+	for _, registration := range jobs {
+		if _, err := s.cronRunner.AddFunc(registration.schedule, registration.job); err != nil {
+			return fmt.Errorf("register %s schedule %q: %w", registration.name, registration.schedule, err)
+		}
 	}
 
 	// --- Startup Jobs ---
-	go func() {
-		log.Println("[Scheduler] Running initial startup jobs...")
-		time.Sleep(2 * time.Second)
+	if getEnvBoolScheduler("STARTUP_JOBS_ENABLED", true) {
+		s.jobWG.Add(1)
+		go func() {
+			defer s.jobWG.Done()
+			log.Println("[Scheduler] Running initial startup jobs...")
+			time.Sleep(2 * time.Second)
 
-		scrapeCompanies()
-		time.Sleep(1 * time.Second)
-		scrapeMarketStatus()
-		time.Sleep(1 * time.Second)
+			scrapeCompanies()
+			time.Sleep(1 * time.Second)
+			scrapeMarketStatus()
+			time.Sleep(1 * time.Second)
 
-		// These already check market status internally
-		scrapePrices()
-		time.Sleep(1 * time.Second)
-		scrapeGainers()
-		time.Sleep(1 * time.Second)
-		scrapeLosers()
-		time.Sleep(1 * time.Second)
+			// These already check market status internally
+			s.runExclusive("prices", func() { s.runScrapePricesInternal("[Scheduler][Startup]", true) })
+			time.Sleep(1 * time.Second)
+			s.runExclusive("gainers", func() { s.runScrapeGainersInternal("[Scheduler][Startup]", true) })
+			time.Sleep(1 * time.Second)
+			s.runExclusive("losers", func() { s.runScrapeLosersInternal("[Scheduler][Startup]", true) })
+			time.Sleep(1 * time.Second)
 
-		scrapeMerolaganiNews()
-		scrapeNepalipaisaNews()
-		time.Sleep(1 * time.Second)
+			scrapeMerolaganiNews()
+			scrapeNepalipaisaNews()
+			time.Sleep(1 * time.Second)
 
-		// Conditionally run Merolagani chart data update on startup
-		startupMarketStatus, dbErr := s.nepseScraper.StatusRepo.GetLatestMarketStatus()
-		if dbErr != nil {
-			log.Printf("[ERROR][Scheduler] Startup: Failed to get current market status for Merolagani chart job: %v. Skipping initial chart update.", dbErr)
-		} else if startupMarketStatus == nil || startupMarketStatus.Status != "OPEN" {
-			statusStr := "UNKNOWN"
-			if startupMarketStatus != nil {
-				statusStr = startupMarketStatus.Status
+			// Conditionally run Merolagani chart data update on startup
+			startupMarketStatus, dbErr := s.nepseScraper.StatusRepo.GetLatestMarketStatus()
+			if dbErr != nil {
+				log.Printf("[ERROR][Scheduler] Startup: Failed to get current market status for Merolagani chart job: %v. Skipping initial chart update.", dbErr)
+			} else if startupMarketStatus != nil && startupMarketStatus.Status == "OPEN" {
+				statusStr := "UNKNOWN"
+				if startupMarketStatus != nil {
+					statusStr = startupMarketStatus.Status
+				}
+				log.Printf("[Scheduler][Skip] Startup: Market is OPEN (Status: %s). Deferring the expensive chart backfill until the market is closed.", statusStr)
+			} else {
+				log.Println("[Scheduler] Startup: Market is closed or unknown. Running initial UpdateMerolaganiChartData job.")
+				updateMerolaganiChartDataJob() // Calls s.executeMerolaganiChartUpdate
 			}
-			log.Printf("[Scheduler][Skip] Startup: Market is not OPEN (Status: %s). Skipping initial UpdateMerolaganiChartData job.", statusStr)
-		} else {
-			log.Println("[Scheduler] Startup: Market is OPEN. Running initial UpdateMerolaganiChartData job.")
-			updateMerolaganiChartDataJob() // Calls s.executeMerolaganiChartUpdate
-		}
 
-		log.Println("[Scheduler] Initial startup jobs complete.")
-	}()
+			log.Println("[Scheduler] Initial startup jobs complete.")
+		}()
+	} else {
+		log.Println("Scheduler startup jobs are disabled.")
+	}
 
 	s.cronRunner.Start()
 	log.Println("Scheduler started.")
+	return nil
 }
 
 // executeMerolaganiChartUpdate contains the actual logic for the Merolagani chart data job.
@@ -277,12 +360,10 @@ func (s *Scheduler) executeMerolaganiChartUpdate(logPrefix string) {
 				startDate = time.Date(2000, 1, 1, 0, 0, 0, 0, nptLocation).Unix()
 				log.Printf("%s Daily Fetch: No existing data for %s. Fetching full history since 2000-01-01.", logPrefix, symbol)
 			} else {
-				startDate = lastTimestamp + (24 * 60 * 60)
-				if startDate >= endDate {
-					log.Printf("%s Daily Fetch: Chart data for %s is already up-to-date (Last: %s). Skipping daily fetch.", logPrefix, symbol, time.Unix(lastTimestamp, 0).In(nptLocation).Format("2006-01-02"))
-					return
-				}
-				log.Printf("%s Daily Fetch: Existing data for %s until %s. Fetching new data from %s.", logPrefix, symbol, time.Unix(lastTimestamp, 0).In(nptLocation).Format("2006-01-02"), time.Unix(startDate, 0).In(nptLocation).Format("2006-01-02"))
+				// Re-fetch an overlap so the latest candle and recent adjusted values
+				// are corrected after NEPSE closes or a source revises its response.
+				startDate = lastTimestamp - (14 * 24 * 60 * 60)
+				log.Printf("%s Daily Fetch: Existing data for %s until %s. Refreshing from %s.", logPrefix, symbol, time.Unix(lastTimestamp, 0).In(nptLocation).Format("2006-01-02"), time.Unix(startDate, 0).In(nptLocation).Format("2006-01-02"))
 			}
 
 			dailyChartData, errScrape := s.merolaganiScraper.FetchChartData(symbol, "1D", startDate, endDate, true)
@@ -307,7 +388,7 @@ func (s *Scheduler) executeMerolaganiChartUpdate(logPrefix string) {
 					modelChartPoints[i] = models.ChartDataPoint{Timestamp: sp.Timestamp, Open: sp.Open, High: sp.High, Low: sp.Low, Close: sp.Close, Volume: sp.Volume}
 				}
 
-				insertedCount, errSave := s.chartRepo.SaveChartDataPoints(symbol, "merolagani", modelChartPoints)
+				affectedCount, errSave := s.chartRepo.SaveChartDataPoints(symbol, "merolagani", modelChartPoints)
 				if errSave != nil {
 					log.Printf("[ERROR]%s Daily Fetch: Failed to save chart data for %s: %v", logPrefix, symbol, errSave)
 					mu.Lock()
@@ -315,13 +396,9 @@ func (s *Scheduler) executeMerolaganiChartUpdate(logPrefix string) {
 					mu.Unlock()
 					atomic.AddInt32(&companiesWithOtherErrorsDaily, 1)
 				} else {
-					log.Printf("%s Daily Fetch: Saved %d new chart points for %s.", logPrefix, insertedCount, symbol)
-					if insertedCount > 0 {
+					log.Printf("%s Daily Fetch: Upserted %d chart points for %s.", logPrefix, affectedCount, symbol)
+					if affectedCount > 0 {
 						atomic.AddInt32(&companiesSuccessfullyUpdatedDaily, 1)
-						mu.Lock()
-						successfullyUpdatedSymbols = append(successfullyUpdatedSymbols, symbol)
-						mu.Unlock()
-					} else if !found && len(modelChartPoints) > 0 {
 						mu.Lock()
 						successfullyUpdatedSymbols = append(successfullyUpdatedSymbols, symbol)
 						mu.Unlock()
@@ -424,75 +501,82 @@ func (s *Scheduler) executeMerolaganiChartUpdate(logPrefix string) {
 }
 
 // RunHistoricalDataJobNow manually triggers the NEPSE historical data scraping and saving process.
-func (s *Scheduler) RunHistoricalDataJobNow() {
-	log.Println("[Manual Trigger] Running job: ScrapeHistoricalData (NEPSE)")
-	s.runScrapeHistoricalDataInternal("[Manual Trigger]")
-	log.Println("[Manual Trigger] Finished job: ScrapeHistoricalData (NEPSE)")
+func (s *Scheduler) RunHistoricalDataJobNow() bool {
+	return s.startExclusive("historical", func() {
+		log.Println("[Manual Trigger] Running job: ScrapeHistoricalData (NEPSE)")
+		s.runScrapeHistoricalDataInternal("[Manual Trigger]")
+		log.Println("[Manual Trigger] Finished job: ScrapeHistoricalData (NEPSE)")
+	})
 }
 
 // RunMerolaganiChartDataJobNow manually triggers the Merolagani chart data scraping and aggregation.
-func (s *Scheduler) RunMerolaganiChartDataJobNow() {
-	log.Println("[Manual Trigger] Running job: UpdateMerolaganiChartData")
-	// Call the refactored internal method with a specific log prefix
-	s.executeMerolaganiChartUpdate("[Manual Trigger]")
-	log.Println("[Manual Trigger] Finished job: UpdateMerolaganiChartData")
+func (s *Scheduler) RunMerolaganiChartDataJobNow() bool {
+	return s.startExclusive("charts", func() {
+		log.Println("[Manual Trigger] Running job: UpdateMerolaganiChartData")
+		s.executeMerolaganiChartUpdate("[Manual Trigger]")
+		log.Println("[Manual Trigger] Finished job: UpdateMerolaganiChartData")
+	})
 }
 
 // RunPriceScrapeJobNow manually triggers the price scraping job.
 // The 'force' parameter bypasses the market status check.
-func (s *Scheduler) RunPriceScrapeJobNow(force bool) {
-	log.Println("[Manual Trigger] Running price scrape job now...")
-	go s.runScrapePricesInternal("[Manual Trigger]", force)
+func (s *Scheduler) RunPriceScrapeJobNow(force bool) bool {
+	return s.startExclusive("prices", func() {
+		log.Println("[Manual Trigger] Running price scrape job now...")
+		s.runScrapePricesInternal("[Manual Trigger]", force)
+	})
 }
 
 // TriggerAllPrimaryJobsUpdate handles requests to manually trigger all primary data scraping jobs.
-func (s *Scheduler) RunAllPrimaryJobsNow() {
-	log.Println("[Manual Trigger] Running all primary data scraping jobs now...")
+func (s *Scheduler) RunAllPrimaryJobsNow() bool {
+	return s.startExclusive("all", func() {
+		log.Println("[Manual Trigger] Running all primary data scraping jobs now...")
 
-	log.Println("[Manual Trigger] Running: ScrapeCompanies")
-	if err := s.nepseScraper.ScrapeCompanies(); err != nil {
-		log.Printf("[ERROR][Manual Trigger] Failed to scrape companies: %v", err)
-	}
-	time.Sleep(1 * time.Second)
+		log.Println("[Manual Trigger] Running: ScrapeCompanies")
+		if err := s.nepseScraper.ScrapeCompanies(); err != nil {
+			log.Printf("[ERROR][Manual Trigger] Failed to scrape companies: %v", err)
+		}
+		time.Sleep(1 * time.Second)
 
-	log.Println("[Manual Trigger] Running: ScrapeMarketStatus")
-	if err := s.nepseScraper.ScrapeMarketStatus(); err != nil {
-		log.Printf("[ERROR][Manual Trigger] Failed to scrape market status: %v", err)
-	}
-	time.Sleep(1 * time.Second)
+		log.Println("[Manual Trigger] Running: ScrapeMarketStatus")
+		if err := s.nepseScraper.ScrapeMarketStatus(); err != nil {
+			log.Printf("[ERROR][Manual Trigger] Failed to scrape market status: %v", err)
+		}
+		time.Sleep(1 * time.Second)
 
-	log.Println("[Manual Trigger] Running: ScrapePrices")
-	s.runScrapePricesInternal("[Manual Trigger]", true)
-	time.Sleep(1 * time.Second)
+		log.Println("[Manual Trigger] Running: ScrapePrices")
+		s.runScrapePricesInternal("[Manual Trigger]", true)
+		time.Sleep(1 * time.Second)
 
-	log.Println("[Manual Trigger] Running: ScrapeTopGainers")
-	s.runScrapeGainersInternal("[Manual Trigger]")
-	time.Sleep(1 * time.Second)
+		log.Println("[Manual Trigger] Running: ScrapeTopGainers")
+		s.runScrapeGainersInternal("[Manual Trigger]", true)
+		time.Sleep(1 * time.Second)
 
-	log.Println("[Manual Trigger] Running: ScrapeTopLosers")
-	s.runScrapeLosersInternal("[Manual Trigger]")
-	time.Sleep(1 * time.Second)
+		log.Println("[Manual Trigger] Running: ScrapeTopLosers")
+		s.runScrapeLosersInternal("[Manual Trigger]", true)
+		time.Sleep(1 * time.Second)
 
-	log.Println("[Manual Trigger] Running: ScrapeMerolaganiNews")
-	if err := s.merolaganiScraper.ScrapeNews(); err != nil {
-		log.Printf("[ERROR][Manual Trigger] Failed to scrape Merolagani news: %v", err)
-	}
-	time.Sleep(1 * time.Second)
+		log.Println("[Manual Trigger] Running: ScrapeMerolaganiNews")
+		if err := s.merolaganiScraper.ScrapeNews(); err != nil {
+			log.Printf("[ERROR][Manual Trigger] Failed to scrape Merolagani news: %v", err)
+		}
+		time.Sleep(1 * time.Second)
 
-	log.Println("[Manual Trigger] Running: ScrapeNepalipaisaNews")
-	if err := s.nepalipaisaScraper.ScrapeNews(); err != nil {
-		log.Printf("[ERROR][Manual Trigger] Failed to scrape Nepalipaisa news: %v", err)
-	}
-	time.Sleep(1 * time.Second)
+		log.Println("[Manual Trigger] Running: ScrapeNepalipaisaNews")
+		if err := s.nepalipaisaScraper.ScrapeNews(); err != nil {
+			log.Printf("[ERROR][Manual Trigger] Failed to scrape Nepalipaisa news: %v", err)
+		}
+		time.Sleep(1 * time.Second)
 
-	log.Println("[Manual Trigger] Running: ScrapeHistoricalData (NEPSE)")
-	s.runScrapeHistoricalDataInternal("[Manual Trigger]")
-	time.Sleep(1 * time.Second)
+		log.Println("[Manual Trigger] Running: ScrapeHistoricalData (NEPSE)")
+		s.runScrapeHistoricalDataInternal("[Manual Trigger]")
+		time.Sleep(1 * time.Second)
 
-	log.Println("[Manual Trigger] Running: UpdateMerolaganiChartData")
-	s.executeMerolaganiChartUpdate("[Manual Trigger]")
+		log.Println("[Manual Trigger] Running: UpdateMerolaganiChartData")
+		s.executeMerolaganiChartUpdate("[Manual Trigger]")
 
-	log.Println("[Manual Trigger] All primary jobs trigger attempt complete.")
+		log.Println("[Manual Trigger] All primary jobs trigger attempt complete.")
+	})
 }
 
 // Internal helper for ScrapePrices to be callable by RunAllPrimaryJobsNow
@@ -528,40 +612,40 @@ func (s *Scheduler) runScrapePricesInternal(logPrefix string, forceUpdate bool) 
 }
 
 // Internal helper for ScrapeTopGainers
-func (s *Scheduler) runScrapeGainersInternal(logPrefix string) {
-	marketStatus, err := s.nepseScraper.StatusRepo.GetLatestMarketStatus()
-	if err != nil {
-		log.Printf("[ERROR]%s Failed to get market status for gainer check: %v", logPrefix, err)
-		return
+func (s *Scheduler) runScrapeGainersInternal(logPrefix string, force bool) {
+	if !force {
+		marketStatus, err := s.nepseScraper.StatusRepo.GetLatestMarketStatus()
+		if err != nil {
+			log.Printf("[ERROR]%s Failed to get market status for gainer check: %v", logPrefix, err)
+			return
+		}
+		if marketStatus == nil || marketStatus.Status != "OPEN" {
+			log.Printf("%s[Skip] Market is not OPEN. Skipping gainer scrape.", logPrefix)
+			return
+		}
 	}
 
-	if marketStatus == nil || marketStatus.Status != "OPEN" {
-		log.Printf("%s[Skip] Market is not OPEN. Skipping gainer scrape.", logPrefix)
-		// BUGFIX: Do not clear movers when market is closed.
-		return
-	}
-
-	log.Printf("%s Market is OPEN. Proceeding with gainer scrape.", logPrefix)
+	log.Printf("%s Proceeding with gainer scrape (force=%t).", logPrefix, force)
 	if err := s.nepseScraper.ScrapeTopGainers(); err != nil {
 		log.Printf("[ERROR]%s Failed to scrape top gainers: %v", logPrefix, err)
 	}
 }
 
 // Internal helper for ScrapeTopLosers
-func (s *Scheduler) runScrapeLosersInternal(logPrefix string) {
-	marketStatus, err := s.nepseScraper.StatusRepo.GetLatestMarketStatus()
-	if err != nil {
-		log.Printf("[ERROR]%s Failed to get market status for loser check: %v", logPrefix, err)
-		return
+func (s *Scheduler) runScrapeLosersInternal(logPrefix string, force bool) {
+	if !force {
+		marketStatus, err := s.nepseScraper.StatusRepo.GetLatestMarketStatus()
+		if err != nil {
+			log.Printf("[ERROR]%s Failed to get market status for loser check: %v", logPrefix, err)
+			return
+		}
+		if marketStatus == nil || marketStatus.Status != "OPEN" {
+			log.Printf("%s[Skip] Market is not OPEN. Skipping loser scrape.", logPrefix)
+			return
+		}
 	}
 
-	if marketStatus == nil || marketStatus.Status != "OPEN" {
-		log.Printf("%s[Skip] Market is not OPEN. Skipping loser scrape.", logPrefix)
-		// BUGFIX: Do not clear movers when market is closed.
-		return
-	}
-
-	log.Printf("%s Market is OPEN. Proceeding with loser scrape.", logPrefix)
+	log.Printf("%s Proceeding with loser scrape (force=%t).", logPrefix, force)
 	if err := s.nepseScraper.ScrapeTopLosers(); err != nil {
 		log.Printf("[ERROR]%s Failed to scrape top losers: %v", logPrefix, err)
 	}
@@ -635,6 +719,17 @@ func (s *Scheduler) Stop() {
 			log.Println("Scheduler stop timed out.")
 		}
 	}
+	manualJobsDone := make(chan struct{})
+	go func() {
+		s.jobWG.Wait()
+		close(manualJobsDone)
+	}()
+	select {
+	case <-manualJobsDone:
+		log.Println("Manual scheduler jobs stopped gracefully.")
+	case <-time.After(10 * time.Second):
+		log.Println("Manual scheduler jobs are still running after shutdown timeout.")
+	}
 }
 
 // Helper function to get the first N elements of a string slice
@@ -662,9 +757,10 @@ func aggregateToWeekly(dailyData []models.ChartDataPoint) []models.ChartDataPoin
 
 	for _, p := range dailyData {
 		pt := time.Unix(p.Timestamp, 0).In(time.UTC)
-		// year, week := pt.ISOWeek() // ISO week might not be ideal for financial weeks starting Mon
-		// For consistency, let's define week start as Monday
-		offset := (int(pt.Weekday()) - int(time.Monday) + 7) % 7
+		// NEPSE's trading week is Sunday-Thursday, so Sunday must start a new
+		// candle. ISO/Monday grouping incorrectly merged Sunday with the prior
+		// week's Monday-Thursday session.
+		offset := int(pt.Weekday())
 		weekStart := pt.AddDate(0, 0, -offset).Truncate(24 * time.Hour)
 
 		if _, exists := weeklyAggregates[weekStart]; !exists {

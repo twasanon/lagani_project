@@ -11,11 +11,11 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRoute, useNavigation, RouteProp } from '@react-navigation/native';
-import { MainStackParamList } from '../navigation/MainStackNavigator'; // Adjust path if needed
+import { RootStackParamList } from '../navigation/RootNavigator';
 import { PortfolioTransaction, getTransactionsBySymbol, deletePortfolioTransaction } from '../../src/utils/database';
 import { colors } from '../../src/theme/colors'; // Import theme colors
 
-type TransactionHistoryRouteProp = RouteProp<MainStackParamList, 'TransactionHistory'>;
+type TransactionHistoryRouteProp = RouteProp<RootStackParamList, 'TransactionHistory'>;
 
 const TransactionHistoryScreen = () => {
   const route = useRoute<TransactionHistoryRouteProp>();
@@ -63,7 +63,7 @@ const TransactionHistoryScreen = () => {
 
     Alert.alert(
       "Confirm Deletion",
-      `Are you sure you want to delete the ${transaction.type} transaction of ${transaction.quantity} shares @ ₹ ${transaction.price.toFixed(2)} on ${new Date(transaction.timestamp).toLocaleDateString()}? This will recalculate your holding.`, 
+      `Are you sure you want to delete the ${transaction.type} transaction of ${transaction.quantity} shares at Rs. ${transaction.price.toFixed(2)} on ${new Date(transaction.timestamp).toLocaleDateString()}? This will recalculate your holding.`,
       [
         {
           text: "Cancel",
@@ -106,7 +106,7 @@ const TransactionHistoryScreen = () => {
                  </View>
                  <View style={styles.row}>
                      <Text style={styles.detailLabel}>Price:</Text>
-                     <Text style={styles.detailValue}>₹ {String(item.price?.toFixed(2) ?? 'N/A')}</Text>
+                     <Text style={styles.detailValue}>Rs. {String(item.price?.toFixed(2) ?? 'N/A')}</Text>
                 </View>
             </View>
             {canDelete && (
@@ -296,4 +296,4 @@ const styles = StyleSheet.create({
     },
 });
 
-export default TransactionHistoryScreen; 
+export default TransactionHistoryScreen;

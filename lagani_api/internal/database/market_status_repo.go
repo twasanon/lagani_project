@@ -46,9 +46,10 @@ func (r *MarketStatusRepository) GetLatestMarketStatus() (*models.MarketStatus, 
 	query := `SELECT status, as_of, updated_at FROM market_status WHERE id = 1;`
 
 	var status models.MarketStatus
+	var asOf sql.NullTime
 	row := r.DB.QueryRow(query)
 
-	err := row.Scan(&status.Status, &status.AsOf, &status.UpdatedAt)
+	err := row.Scan(&status.Status, &asOf, &status.UpdatedAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			log.Println("No market status found in database.")
@@ -57,6 +58,10 @@ func (r *MarketStatusRepository) GetLatestMarketStatus() (*models.MarketStatus, 
 			return nil, nil
 		}
 		return nil, fmt.Errorf("failed to scan market status: %w", err)
+	}
+	if asOf.Valid {
+		value := asOf.Time.UTC()
+		status.AsOf = &value
 	}
 
 	log.Printf("Market status fetched: %+v", status)

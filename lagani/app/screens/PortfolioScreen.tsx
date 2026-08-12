@@ -15,6 +15,7 @@ import {
     getAllTransactionsForHeldSymbols,
     getPricesBySymbols, 
     getPortfolioHoldingBySymbol,
+    getPortfolioHoldings,
     PortfolioTransaction,
     PriceStatItem, 
     PortfolioHolding,
@@ -71,24 +72,24 @@ const PortfolioScreen = () => {
     setError(null);
     console.log('[PortfolioScreen] Fetching portfolio transactions (BUY/SELL)...');
     try {
-      // 1. Get all transactions (BUY/SELL) for currently held symbols
-      const allTransactions = await getAllTransactionsForHeldSymbols();
-      if (allTransactions.length === 0) {
+      // Holdings are the source of truth for valuation; transactions are history only.
+      const [allTransactions, holdings] = await Promise.all([
+        getAllTransactionsForHeldSymbols(),
+        getPortfolioHoldings(),
+      ]);
+      if (holdings.length === 0) {
         setPortfolioSections([]);
-        calculateAndSetSummary([]);
+        calculateAndSetSummary([], {});
         setIsLoading(false);
         return;
       }
 
-      // 2. Get unique symbols and their current prices
-      const uniqueSymbols = [...new Set(allTransactions.map(tx => tx.symbol))];
+      const uniqueSymbols = holdings.map((holding) => holding.symbol);
       const prices = await getPricesBySymbols(uniqueSymbols);
       
-      // 3. Fetch total holding data for each symbol (for Sell modal & Company Name)
-      const totalHoldingsMap: Record<string, PortfolioHolding | null> = {};
-      for (const symbol of uniqueSymbols) {
-        totalHoldingsMap[symbol] = await getPortfolioHoldingBySymbol(symbol);
-      }
+      const totalHoldingsMap: Record<string, PortfolioHolding> = Object.fromEntries(
+        holdings.map((holding) => [holding.symbol, holding]),
+      );
 
       // 4. Group ALL transactions by symbol and enrich with market data
       const groupedBySymbol: Record<string, PortfolioLotDisplay[]> = {};
@@ -111,7 +112,7 @@ const PortfolioScreen = () => {
 
         groupedBySymbol[tx.symbol].push({
           ...tx,
-          companyName: totalHoldingsMap[tx.symbol]?.companyName,
+          companyName: totalHoldingsMap[tx.symbol]?.companyName ?? undefined,
           currentPrice: currentPrice,
           marketValue: marketValue,
           profitLoss: profitLoss,
@@ -124,10 +125,10 @@ const PortfolioScreen = () => {
       const sections: PortfolioSection[] = uniqueSymbols.map(symbol => {
         const currentPriceData = prices[symbol];
         const currentPrice = currentPriceData?.lastTradedPrice;
-        const percentageChange = currentPriceData?.percentageChange;
+        const percentageChange = currentPriceData?.percentChange;
         return {
           symbol: symbol,
-          companyName: totalHoldingsMap[symbol]?.companyName,
+          companyName: totalHoldingsMap[symbol]?.companyName ?? undefined,
           currentPrice: currentPrice,
           percentageChange: percentageChange,
           totalHoldingData: totalHoldingsMap[symbol],
@@ -136,28 +137,30 @@ const PortfolioScreen = () => {
       }).sort((a, b) => a.symbol.localeCompare(b.symbol));
 
       setPortfolioSections(sections);
-      // Calculate summary ONLY from BUY lots for total investment
-      const buyLots = allTransactions.filter(tx => tx.type === 'BUY').map(tx => groupedBySymbol[tx.symbol]?.find(lot => lot.id === tx.id)).filter(lot => lot !== undefined) as PortfolioLotDisplay[];
-      calculateAndSetSummary(buyLots);
+      calculateAndSetSummary(holdings, prices);
       console.log(`[PortfolioScreen] Portfolio loaded with ${sections.length} symbols.`);
 
     } catch (err: any) {
       console.error("[PortfolioScreen] Failed to fetch portfolio transactions:", err);
       setError("Could not load portfolio data. Please try again.");
       setPortfolioSections([]);
-      calculateAndSetSummary([]);
+      calculateAndSetSummary([], {});
     } finally {
       setIsLoading(false);
     }
   }, []);
 
-  const calculateAndSetSummary = (lots: PortfolioLotDisplay[]) => {
+  const calculateAndSetSummary = (
+    holdings: PortfolioHolding[],
+    prices: Record<string, PriceStatItem>,
+  ) => {
     let totalValue = 0;
     let totalInvestment = 0;
 
-    lots.forEach(lot => {
-      totalValue += lot.marketValue;
-      totalInvestment += lot.quantity * lot.price; // Cost basis is per lot
+    holdings.forEach((holding) => {
+      const currentPrice = prices[holding.symbol]?.lastTradedPrice ?? holding.averagePurchasePrice;
+      totalValue += holding.quantity * currentPrice;
+      totalInvestment += holding.quantity * holding.averagePurchasePrice;
     });
 
     const totalProfitLoss = totalValue - totalInvestment;
@@ -303,25 +306,30 @@ const PortfolioScreen = () => {
 
     return (
       <Card className="mx-4 mb-3 rounded-xl shadow-md overflow-hidden border border-border bg-background">
-        <TouchableOpacity 
-          className="flex-row justify-between items-center p-4 border-b border-border active:opacity-90 transition-opacity duration-150"
-          onPress={() => openHistoryModal(section.symbol, section.companyName)}
-          activeOpacity={1}
-        >
-          <View className="flex-1 mr-2">
-            <Text className="text-base font-semibold text-text">{section.symbol}</Text>
-            <Text className="text-xs text-textSecondary" numberOfLines={1}>{section.companyName ?? 'Loading...'}</Text>
-          </View>
-          
-          <View className="items-end mr-3">
-              <Text className={`text-base font-medium ${priceColor}`}>Rs. {price != null ? price.toFixed(2) : '--'}</Text>
-              <Text className={`text-xs ${priceColor}`}>{changeDisplay}</Text>
-          </View>
+        <View className="flex-row justify-between items-center p-4 border-b border-border">
+          <TouchableOpacity
+            className="flex-1 flex-row items-center active:opacity-90"
+            onPress={() => openHistoryModal(section.symbol, section.companyName)}
+            accessibilityRole="button"
+            accessibilityLabel={`View ${section.symbol} transaction history`}
+          >
+            <View className="flex-1 mr-2">
+              <Text className="text-base font-semibold text-text">{section.symbol}</Text>
+              <Text className="text-xs text-textSecondary" numberOfLines={1}>{section.companyName ?? 'Loading...'}</Text>
+            </View>
+
+            <View className="items-end mr-3">
+                <Text className={`text-base font-medium ${priceColor}`}>Rs. {price != null ? price.toFixed(2) : '--'}</Text>
+                <Text className={`text-xs ${priceColor}`}>{changeDisplay}</Text>
+            </View>
+          </TouchableOpacity>
 
           <View className="flex-row items-center">
               <TouchableOpacity 
                   onPress={(e) => { e.stopPropagation(); openHistoryModal(section.symbol, section.companyName); }}
                   className="p-2 mr-2"
+                  accessibilityRole="button"
+                  accessibilityLabel={`Edit ${section.symbol} transactions`}
               >
                   <Ionicons name="pencil-outline" size={18} color={colors.primary} />
               </TouchableOpacity>
@@ -330,12 +338,14 @@ const PortfolioScreen = () => {
                  <TouchableOpacity 
                     onPress={(e) => { e.stopPropagation(); openSellModal(section.totalHoldingData); }} 
                     className="bg-negative px-3 py-1 rounded-full"
+                    accessibilityRole="button"
+                    accessibilityLabel={`Sell ${section.symbol}`}
                   >
                      <Text className="text-white text-xs font-medium">Sell</Text>
                  </TouchableOpacity>
               )}
           </View>
-        </TouchableOpacity>
+        </View>
 
         <CardContent className="p-0">
           {section.data.map((item, index) => {
@@ -371,7 +381,12 @@ const PortfolioScreen = () => {
                 </View>
                 
                 <View className="flex-row items-center">
-                    <TouchableOpacity onPress={() => handleDeleteLot(item)} className="p-2 ml-1">
+                    <TouchableOpacity
+                      onPress={() => handleDeleteLot(item)}
+                      className="p-2 ml-1"
+                      accessibilityRole="button"
+                      accessibilityLabel={`Delete ${item.type.toLowerCase()} transaction for ${item.symbol}`}
+                    >
                         <Ionicons name="trash-outline" size={20} color={colors.negative} />
                     </TouchableOpacity>
                 </View>
@@ -391,6 +406,8 @@ const PortfolioScreen = () => {
              <TouchableOpacity 
                 onPress={openAddModal} 
                 className="h-8 w-8 bg-primary rounded-full items-center justify-center shadow"
+                accessibilityRole="button"
+                accessibilityLabel="Add portfolio transaction"
              > 
                 {/* Use Ionicons for the plus icon */}
                 <Ionicons name="add" size={22} color="white" /> 
@@ -467,7 +484,7 @@ const PortfolioScreen = () => {
                   onClose={closeSellModal}
                   onTransactionComplete={handleTransactionComplete}
                   symbol={selectedHoldingForSell.symbol}
-                  companyName={selectedHoldingForSell.companyName}
+                  companyName={selectedHoldingForSell.companyName ?? undefined}
                   currentQuantity={selectedHoldingForSell.quantity}
               />
         )}
@@ -509,4 +526,4 @@ const styles = StyleSheet.create({
   },
 });
 
-export default PortfolioScreen; 
+export default PortfolioScreen;

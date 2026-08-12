@@ -1,7 +1,6 @@
 import React from 'react';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { Ionicons } from '@expo/vector-icons';
-import { View, Text } from 'react-native';
 import { NavigatorScreenParams } from '@react-navigation/native';
 import { colors } from '../../src/theme/colors'; // Import theme colors
 
@@ -26,14 +25,6 @@ export type RootTabParamList = {
 };
 
 const Tab = createBottomTabNavigator<RootTabParamList>();
-
-// Temporarily use placeholder components for screens we haven't created yet
-const PlaceholderScreen = ({ name }: { name: string }) => (
-  <View className="flex-1 items-center justify-center bg-white">
-    <Text className="text-xl font-bold text-gray-800">{name} Screen</Text>
-    <Text className="text-gray-600 mt-2">Coming soon</Text>
-  </View>
-);
 
 const AppNavigator = () => {
   return (
@@ -102,4 +93,4 @@ const AppNavigator = () => {
   );
 };
 
-export default AppNavigator; 
+export default AppNavigator;

@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"math"
+	"strings"
 	"time"
 
 	"lagani_api/internal/models"
@@ -20,11 +22,23 @@ func NewChartRepository(db *sql.DB) *ChartRepository {
 }
 
 // SaveChartDataPoints saves a batch of chart data points for a specific company symbol and source.
-// It uses INSERT ... ON CONFLICT DO NOTHING to avoid duplicates based on (company_symbol, source, timestamp).
-// Returns the number of rows actually inserted.
+// It upserts by (company_symbol, source, timestamp), allowing the latest candle
+// and adjusted recent values to be corrected by subsequent source responses.
+// Returns the number of rows inserted or updated.
 func (r *ChartRepository) SaveChartDataPoints(companySymbol string, source string, points []models.ChartDataPoint) (int64, error) {
 	if len(points) == 0 {
 		return 0, nil
+	}
+
+	companySymbol = strings.ToUpper(strings.TrimSpace(companySymbol))
+	source = strings.ToLower(strings.TrimSpace(source))
+	if companySymbol == "" || source == "" {
+		return 0, fmt.Errorf("SaveChartDataPoints: company symbol and source are required")
+	}
+	for _, point := range points {
+		if err := validateChartPoint(point); err != nil {
+			return 0, fmt.Errorf("SaveChartDataPoints: invalid point for %s: %w", companySymbol, err)
+		}
 	}
 
 	tx, err := r.db.Begin()
@@ -36,7 +50,13 @@ func (r *ChartRepository) SaveChartDataPoints(companySymbol string, source strin
 	sqlStr := `
 		INSERT INTO chart_data (company_symbol, source, timestamp, open, high, low, close, volume, scraped_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT (company_symbol, source, timestamp) DO NOTHING;
+		ON CONFLICT (company_symbol, source, timestamp) DO UPDATE SET
+			open = excluded.open,
+			high = excluded.high,
+			low = excluded.low,
+			close = excluded.close,
+			volume = excluded.volume,
+			scraped_at = excluded.scraped_at;
 	`
 	stmt, err := tx.Prepare(sqlStr)
 	if err != nil {
@@ -60,9 +80,7 @@ func (r *ChartRepository) SaveChartDataPoints(companySymbol string, source strin
 			now,
 		)
 		if err != nil {
-			log.Printf("[ERROR] SaveChartDataPoints: Failed to execute insert for symbol %s, ts %d: %v", companySymbol, p.Timestamp, err)
-			// Continue to try other points in the batch
-			continue
+			return 0, fmt.Errorf("SaveChartDataPoints: failed to upsert symbol %s at %d: %w", companySymbol, p.Timestamp, err)
 		}
 		rowsAffected, _ := res.RowsAffected() // Check if a row was actually inserted
 		insertedCount += rowsAffected
@@ -72,13 +90,18 @@ func (r *ChartRepository) SaveChartDataPoints(companySymbol string, source strin
 		return 0, fmt.Errorf("SaveChartDataPoints: failed to commit transaction: %w", err)
 	}
 
-	log.Printf("SaveChartDataPoints: Attempted to save %d points for %s from %s, %d new points inserted.", len(points), companySymbol, source, insertedCount)
+	log.Printf("SaveChartDataPoints: Upserted %d points for %s from %s.", insertedCount, companySymbol, source)
 	return insertedCount, nil
 }
 
 // GetChartData retrieves chart data points for a given company symbol, source, and date range.
 // Timestamps are expected to be Unix seconds.
 func (r *ChartRepository) GetChartData(companySymbol string, source string, startDateTimestamp int64, endDateTimestamp int64) ([]models.ChartDataPoint, error) {
+	companySymbol = strings.ToUpper(strings.TrimSpace(companySymbol))
+	source = strings.ToLower(strings.TrimSpace(source))
+	if companySymbol == "" || source == "" || startDateTimestamp > endDateTimestamp {
+		return nil, fmt.Errorf("GetChartData: invalid symbol, source, or timestamp range")
+	}
 	query := `
 		SELECT timestamp, open, high, low, close, volume
 		FROM chart_data
@@ -91,12 +114,11 @@ func (r *ChartRepository) GetChartData(companySymbol string, source string, star
 	}
 	defer rows.Close()
 
-	var points []models.ChartDataPoint
+	points := make([]models.ChartDataPoint, 0)
 	for rows.Next() {
 		var p models.ChartDataPoint
 		if err := rows.Scan(&p.Timestamp, &p.Open, &p.High, &p.Low, &p.Close, &p.Volume); err != nil {
-			log.Printf("[ERROR] GetChartData: Failed to scan chart data row for %s: %v", companySymbol, err)
-			continue // Skip problematic rows
+			return nil, fmt.Errorf("GetChartData: failed to scan row for %s: %w", companySymbol, err)
 		}
 		points = append(points, p)
 	}
@@ -112,6 +134,11 @@ func (r *ChartRepository) GetChartData(companySymbol string, source string, star
 // GetLatestChartTimestamp retrieves the timestamp of the most recent data point for a given company symbol and source.
 // Returns the timestamp (Unix seconds), a boolean indicating if a record was found, and an error if one occurred.
 func (r *ChartRepository) GetLatestChartTimestamp(companySymbol string, source string) (timestamp int64, found bool, err error) {
+	companySymbol = strings.ToUpper(strings.TrimSpace(companySymbol))
+	source = strings.ToLower(strings.TrimSpace(source))
+	if companySymbol == "" || source == "" {
+		return 0, false, fmt.Errorf("GetLatestChartTimestamp: company symbol and source are required")
+	}
 	query := `
 		SELECT MAX(timestamp)
 		FROM chart_data
@@ -158,6 +185,20 @@ func (r *ChartRepository) saveAggregatedChartPoints(tableName string, companySym
 		return 0, nil
 	}
 
+	if err := validateAggregateTable(tableName); err != nil {
+		return 0, err
+	}
+	companySymbol = strings.ToUpper(strings.TrimSpace(companySymbol))
+	source = strings.ToLower(strings.TrimSpace(source))
+	if companySymbol == "" || source == "" {
+		return 0, fmt.Errorf("saveAggregatedChartPoints: company symbol and source are required")
+	}
+	for _, point := range points {
+		if err := validateChartPoint(point); err != nil {
+			return 0, fmt.Errorf("saveAggregatedChartPoints: invalid point for %s: %w", companySymbol, err)
+		}
+	}
+
 	tx, err := r.db.Begin()
 	if err != nil {
 		return 0, fmt.Errorf("saveAggregatedChartPoints (%s): failed to begin transaction: %w", tableName, err)
@@ -174,7 +215,7 @@ func (r *ChartRepository) saveAggregatedChartPoints(tableName string, companySym
 			low = excluded.low,
 			close = excluded.close,
 			volume = excluded.volume,
-			aggregated_at = CURRENT_TIMESTAMP;
+			aggregated_at = excluded.aggregated_at;
 	`, tableName)
 
 	stmt, err := tx.Prepare(sqlStr)
@@ -199,8 +240,7 @@ func (r *ChartRepository) saveAggregatedChartPoints(tableName string, companySym
 			now, // For initial insert's aggregated_at, though conflict update will override with CURRENT_TIMESTAMP
 		)
 		if err != nil {
-			log.Printf("[ERROR] saveAggregatedChartPoints (%s): Failed to execute upsert for symbol %s, ts %d: %v", tableName, companySymbol, p.Timestamp, err)
-			continue
+			return 0, fmt.Errorf("saveAggregatedChartPoints (%s): failed to upsert symbol %s at %d: %w", tableName, companySymbol, p.Timestamp, err)
 		}
 		rowsAffected, _ := res.RowsAffected()
 		updatedOrInsertedCount += rowsAffected // In SQLite, UPSERT typically reports 1 for insert or update
@@ -226,6 +266,14 @@ func (r *ChartRepository) GetMonthlyChartData(companySymbol string, source strin
 
 // getAggregatedChartData is a helper to fetch data from a specified aggregated table.
 func (r *ChartRepository) getAggregatedChartData(tableName string, companySymbol string, source string, startDateTimestamp int64, endDateTimestamp int64) ([]models.ChartDataPoint, error) {
+	if err := validateAggregateTable(tableName); err != nil {
+		return nil, err
+	}
+	companySymbol = strings.ToUpper(strings.TrimSpace(companySymbol))
+	source = strings.ToLower(strings.TrimSpace(source))
+	if companySymbol == "" || source == "" || startDateTimestamp > endDateTimestamp {
+		return nil, fmt.Errorf("getAggregatedChartData: invalid symbol, source, or timestamp range")
+	}
 	query := fmt.Sprintf(`
 		SELECT timestamp, open, high, low, close, volume
 		FROM %s
@@ -239,12 +287,11 @@ func (r *ChartRepository) getAggregatedChartData(tableName string, companySymbol
 	}
 	defer rows.Close()
 
-	var points []models.ChartDataPoint
+	points := make([]models.ChartDataPoint, 0)
 	for rows.Next() {
 		var p models.ChartDataPoint
 		if err := rows.Scan(&p.Timestamp, &p.Open, &p.High, &p.Low, &p.Close, &p.Volume); err != nil {
-			log.Printf("[ERROR] getAggregatedChartData (%s): Failed to scan chart data row for %s: %v", tableName, companySymbol, err)
-			continue
+			return nil, fmt.Errorf("getAggregatedChartData (%s): failed to scan row for %s: %w", tableName, companySymbol, err)
 		}
 		points = append(points, p)
 	}
@@ -259,6 +306,14 @@ func (r *ChartRepository) getAggregatedChartData(tableName string, companySymbol
 
 // GetLatestAggregatedTimestamp retrieves the timestamp of the most recent aggregated data point from a specific table.
 func (r *ChartRepository) GetLatestAggregatedTimestamp(tableName string, companySymbol string, source string) (timestamp int64, found bool, err error) {
+	if err := validateAggregateTable(tableName); err != nil {
+		return 0, false, err
+	}
+	companySymbol = strings.ToUpper(strings.TrimSpace(companySymbol))
+	source = strings.ToLower(strings.TrimSpace(source))
+	if companySymbol == "" || source == "" {
+		return 0, false, fmt.Errorf("GetLatestAggregatedTimestamp: company symbol and source are required")
+	}
 	query := fmt.Sprintf(`
 		SELECT MAX(timestamp)
 		FROM %s
@@ -282,4 +337,29 @@ func (r *ChartRepository) GetLatestAggregatedTimestamp(tableName string, company
 		log.Printf("GetLatestAggregatedTimestamp (%s): No existing data (null max) for %s from %s.", tableName, companySymbol, source)
 		return 0, false, nil
 	}
+}
+
+func validateAggregateTable(tableName string) error {
+	switch tableName {
+	case "chart_data_weekly", "chart_data_monthly":
+		return nil
+	default:
+		return fmt.Errorf("unsupported aggregate table %q", tableName)
+	}
+}
+
+func validateChartPoint(point models.ChartDataPoint) error {
+	values := []float64{point.Open, point.High, point.Low, point.Close, point.Volume}
+	for _, value := range values {
+		if math.IsNaN(value) || math.IsInf(value, 0) || value < 0 {
+			return fmt.Errorf("contains a negative or non-finite value")
+		}
+	}
+	if point.Timestamp <= 0 {
+		return fmt.Errorf("timestamp must be positive")
+	}
+	if point.High < point.Low || point.High < point.Open || point.High < point.Close || point.Low > point.Open || point.Low > point.Close {
+		return fmt.Errorf("OHLC values are inconsistent")
+	}
+	return nil
 }

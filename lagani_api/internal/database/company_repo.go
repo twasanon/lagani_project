@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"lagani_api/internal/models"
@@ -32,17 +33,30 @@ func (r *CompanyRepository) SaveCompanies(companies []models.Company) error {
 	}
 	defer tx.Rollback() // Rollback if commit fails
 
-	// Use INSERT OR REPLACE to handle existing companies based on the PRIMARY KEY (symbol).
-	// The security_id should ideally not change for a symbol, but REPLACE handles updates if needed.
-	sqlStr := `INSERT OR REPLACE INTO companies (symbol, name, security_id, updated_at) VALUES (?, ?, ?, ?)`
+	// REPLACE is intentionally avoided: SQLite implements it as DELETE + INSERT,
+	// which activates ON DELETE CASCADE and used to erase prices and chart history
+	// every time the daily company refresh ran.
+	sqlStr := `
+		INSERT INTO companies (symbol, name, security_id, updated_at)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(symbol) DO UPDATE SET
+			name = excluded.name,
+			security_id = excluded.security_id,
+			updated_at = excluded.updated_at;
+	`
 	stmt, err := tx.Prepare(sqlStr)
 	if err != nil {
 		return fmt.Errorf("failed to prepare company insert statement: %w", err)
 	}
 	defer stmt.Close()
 
-	now := time.Now()
+	now := time.Now().UTC()
 	for _, company := range companies {
+		company.Symbol = strings.ToUpper(strings.TrimSpace(company.Symbol))
+		company.Name = strings.TrimSpace(company.Name)
+		if company.Symbol == "" || company.Name == "" || company.SecurityID <= 0 {
+			return fmt.Errorf("invalid company record: symbol=%q name=%q security_id=%d", company.Symbol, company.Name, company.SecurityID)
+		}
 		_, err := stmt.Exec(company.Symbol, company.Name, company.SecurityID, now)
 		if err != nil {
 			// Log the specific company causing the error
@@ -70,13 +84,12 @@ func (r *CompanyRepository) GetAllCompanies() ([]models.Company, error) {
 	}
 	defer rows.Close()
 
-	var companies []models.Company
+	companies := make([]models.Company, 0)
 	for rows.Next() {
 		var c models.Company
 		// Ensure SecurityID is scanned correctly
 		if err := rows.Scan(&c.Symbol, &c.Name, &c.SecurityID, &c.UpdatedAt); err != nil {
-			log.Printf("[ERROR] Failed to scan company row: %v", err)
-			continue // Skip problematic rows
+			return nil, fmt.Errorf("failed to scan company row: %w", err)
 		}
 		companies = append(companies, c)
 	}
@@ -97,12 +110,11 @@ func (r *CompanyRepository) GetAllCompanySecurityIDs() ([]int, error) {
 	}
 	defer rows.Close()
 
-	var ids []int
+	ids := make([]int, 0)
 	for rows.Next() {
 		var id int
 		if err := rows.Scan(&id); err != nil {
-			log.Printf("[ERROR] Failed to scan security ID row: %v", err)
-			continue // Skip problematic rows
+			return nil, fmt.Errorf("failed to scan security ID row: %w", err)
 		}
 		ids = append(ids, id)
 	}

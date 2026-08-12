@@ -1,5 +1,7 @@
 # Price Update Fix - Lagani API
 
+> Historical note: this records the July 2025 investigation. The August 2026 full backend audit supersedes its deployment-status claims. See `AUDIT.md`, `README.md`, and `DEPLOYMENT.md` for the current system and verified counts.
+
 ## Problem Summary
 
 The user was experiencing empty price data in the Lagani app, even after adding stocks to paper trading. The issue was that:
@@ -180,4 +182,4 @@ Current database status:
 - ✅ The NEPSE API provides last known prices even when market is closed
 - ✅ The slice initialization bug was the critical blocker preventing price data from being saved
 
-**The solution is complete and working correctly. The app now displays prices properly!** 🎉 
+**The solution is complete and working correctly. The app now displays prices properly!** 🎉

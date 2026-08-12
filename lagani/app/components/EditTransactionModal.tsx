@@ -124,7 +124,7 @@ const EditTransactionModal: React.FC<EditTransactionModalProps> = ({
                 />
 
                 {/* Price Input */}
-                <Text style={styles.label}>Price per Share (₹)</Text>
+                <Text style={styles.label}>Price per Share (Rs.)</Text>
                 <TextInput
                     style={styles.input}
                     value={price}
@@ -255,4 +255,4 @@ const styles = StyleSheet.create({
     },
 });
 
-export default EditTransactionModal; 
+export default EditTransactionModal;

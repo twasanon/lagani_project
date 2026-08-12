@@ -1,15 +1,16 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { View, Text, TouchableOpacity, ScrollView, Dimensions, ActivityIndicator, Alert, StyleSheet, Platform } from 'react-native';
+import { View, Text, TouchableOpacity, ScrollView, ActivityIndicator, Alert, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
-import { StockDetailRouteProp, StockDetailNavigationProp } from '../navigation/MainStackNavigator';
+import { RouteProp } from '@react-navigation/native';
+import { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { HomeStackParamList } from '../navigation/HomeStackNavigator';
 import StockHistoryChart from '../components/StockHistoryChart';
 import { fetchStockChartData, ApiChartDataPoint } from '../../src/api/nepseScraper';
 import SellStockModal from '../components/SellStockModal';
 import SetPriceAlertModal from '../components/SetPriceAlertModal';
 import * as Notifications from 'expo-notifications';
-import * as Device from 'expo-device';
 import {
   isWatchlisted,
   addStockToWatchlist,
@@ -36,31 +37,20 @@ async function registerForPushNotificationsAsync(): Promise<boolean> {
     });
   }
 
-  if (Device.isDevice) {
-    const { status: existingStatus } = await Notifications.getPermissionsAsync();
-    let finalStatus = existingStatus;
-    if (existingStatus !== 'granted') {
-      const { status } = await Notifications.requestPermissionsAsync();
-      finalStatus = status;
-    }
-    if (finalStatus !== 'granted') {
-      console.log('[Notifications] Failed to get push token for push notification!');
-      hasPermission = false;
-    } else {
-      console.log('[Notifications] Permission granted.');
-      hasPermission = true;
-    }
-  } else {
-    Alert.alert('Must use physical device for Push Notifications');
-    hasPermission = false; // Cannot get permissions on simulator
+  const { status: existingStatus } = await Notifications.getPermissionsAsync();
+  let finalStatus = existingStatus;
+  if (existingStatus !== 'granted') {
+    const { status } = await Notifications.requestPermissionsAsync();
+    finalStatus = status;
   }
+  hasPermission = finalStatus === 'granted';
 
   return hasPermission;
 }
 
 interface StockDetailScreenProps {
-  route: StockDetailRouteProp;
-  navigation: StockDetailNavigationProp;
+  route: RouteProp<HomeStackParamList, 'StockDetail'>;
+  navigation: NativeStackNavigationProp<HomeStackParamList, 'StockDetail'>;
 }
 
 const StockDetailScreen = ({ route, navigation }: StockDetailScreenProps) => {
@@ -82,17 +72,18 @@ const StockDetailScreen = ({ route, navigation }: StockDetailScreenProps) => {
   const [chartError, setChartError] = useState<string | null>(null);
   // Default to '1Y'. API expects lowercase 'y', 'm'.
   const [selectedChartRange, setSelectedChartRange] = useState('1y'); 
-  // Using 'line' for now, can add UI to switch to 'candlestick' later
-  const [selectedChartType, setSelectedChartType] = useState<'line' | 'candlestick'>('line'); 
   const chartRangeOptions: { label: string; value: string }[] = [
     { label: '1D', value: '1d' },
     { label: '1W', value: '1w' },
     { label: '1M', value: '1m' },
+    { label: '3M', value: '3m' },
+    { label: '6M', value: '6m' },
     { label: '1Y', value: '1y' },
     { label: 'YTD', value: 'ytd' },
+    { label: '5Y', value: '5y' },
     { label: 'All', value: 'all' },
   ];
-  const [hoveredChartValue, setHoveredChartValue] = useState<{ time: any; price?: number; prices?: any } | null>(null);
+  const [hoveredChartValue, setHoveredChartValue] = useState<{ time: number; price: number } | null>(null);
   // --- END NEW CHART STATE ---
 
   // --- Data Fetching --- 
@@ -145,7 +136,7 @@ const StockDetailScreen = ({ route, navigation }: StockDetailScreenProps) => {
     setIsLoadingChart(true);
     setChartError(null);
     setHoveredChartValue(null); // Reset hovered value on new fetch
-    console.log(`[StockDetailScreen] Fetching chart data for ${symbol}, range: ${selectedChartRange}, type: ${selectedChartType}`);
+    console.log(`[StockDetailScreen] Fetching chart data for ${symbol}, range: ${selectedChartRange}`);
     try {
       // Resolution can be omitted to let backend decide based on range
       const data = await fetchStockChartData(symbol, selectedChartRange /*, resolution */);
@@ -161,7 +152,7 @@ const StockDetailScreen = ({ route, navigation }: StockDetailScreenProps) => {
     } finally {
       setIsLoadingChart(false);
     }
-  }, [symbol, selectedChartRange, selectedChartType]);
+  }, [symbol, selectedChartRange]);
 
   // Fetch chart data when symbol or range changes
   useEffect(() => {
@@ -256,24 +247,23 @@ const StockDetailScreen = ({ route, navigation }: StockDetailScreenProps) => {
 
   // --- Render Logic --- 
   const price = priceDetails?.lastTradedPrice;
-  const changePercent = priceDetails?.percentageChange;
+  const changePercent = priceDetails?.percentChange;
   const previousClose = priceDetails?.previousClose;
 
-  const pointChange = (typeof price === 'number' && typeof previousClose === 'number') 
-                 ? price - previousClose 
-                 : null;
+  const pointChange = priceDetails?.change ?? ((typeof price === 'number' && typeof previousClose === 'number')
+    ? price - previousClose
+    : null);
 
   // Determine colors based on price change
   const changeColor = changePercent == null || changePercent >= 0 ? 'text-positive' : 'text-negative';
   const changeIcon = changePercent == null || changePercent >= 0 ? "trending-up" : "trending-down";
   // Use opacity for lighter background shades consistent with theme
-  const chartBg = changePercent == null || changePercent >= 0 ? 'bg-positive bg-opacity-10' : 'bg-negative bg-opacity-10';
   const iconColor = changePercent == null || changePercent >= 0 ? colors.positive : colors.negative;
 
   const displayName = companyInfo?.name || initialName || 'Loading...';
 
   // --- NEW: Handler for chart crosshair move ---
-  const handleChartHover = useCallback((dataPoint: { time: any; price?: number; prices?: any }) => {
+  const handleChartHover = useCallback((dataPoint: { time: number; price: number }) => {
     setHoveredChartValue(dataPoint);
   }, []);
 
@@ -281,6 +271,10 @@ const StockDetailScreen = ({ route, navigation }: StockDetailScreenProps) => {
     setHoveredChartValue(null); // Clear the displayed value when interaction stops
   }, []);
   // --- END NEW HANDLER ---
+
+  const latestChartPoint = chartData[chartData.length - 1];
+  const displayedChartPrice = hoveredChartValue?.price ?? latestChartPoint?.c;
+  const displayedChartTime = hoveredChartValue?.time ?? latestChartPoint?.t;
 
   if (isLoading && !priceDetails) { // Show main loading only if priceDetails are also loading
       return (
@@ -310,11 +304,21 @@ const StockDetailScreen = ({ route, navigation }: StockDetailScreenProps) => {
     <SafeAreaView edges={['top', 'bottom']} className="flex-1 bg-background">
       {/* Header */}
       <View className="flex-row items-center justify-between p-4 border-b border-border">
-        <TouchableOpacity onPress={() => navigation.goBack()} className="p-1">
+        <TouchableOpacity
+          onPress={() => navigation.goBack()}
+          className="p-1"
+          accessibilityRole="button"
+          accessibilityLabel="Go back"
+        >
           <Ionicons name="arrow-back" size={26} color={colors.text} />
         </TouchableOpacity>
         <Text className="text-xl font-semibold text-text" numberOfLines={1}>{symbol}</Text>
-        <TouchableOpacity onPress={toggleWatchlist} className="p-1">
+        <TouchableOpacity
+          onPress={toggleWatchlist}
+          className="p-1"
+          accessibilityRole="button"
+          accessibilityLabel={isWatchlistedState ? `Remove ${symbol} from watchlist` : `Add ${symbol} to watchlist`}
+        >
           <Ionicons name={isWatchlistedState ? "heart" : "heart-outline"} size={26} color={isWatchlistedState ? colors.primary : colors.text} />
         </TouchableOpacity>
       </View>
@@ -324,7 +328,7 @@ const StockDetailScreen = ({ route, navigation }: StockDetailScreenProps) => {
         <View className="p-4">
           <Text className="text-2xl font-bold text-text mb-1" numberOfLines={2}>{displayName}</Text>
           <Text className="text-lg font-semibold text-text mb-1">
-            ₹ {price != null ? price.toFixed(2) : '--'}
+            Rs. {price != null ? price.toFixed(2) : '--'}
           </Text>
           <View className="flex-row items-center">
             <Ionicons name={changeIcon} size={18} color={iconColor} />
@@ -336,11 +340,41 @@ const StockDetailScreen = ({ route, navigation }: StockDetailScreenProps) => {
         </View>
 
         {/* Chart Section */}
-        <View className={`rounded-lg overflow-hidden mx-4 ${chartBg}`}> 
-           {/* Chart Placeholder - Replace with actual chart component later */}
-           <View className="h-48 w-full items-center justify-center">
-                <Text className={`font-bold ${changeColor}`}>Chart Placeholder</Text>
-           </View>
+        <View className="rounded-xl overflow-hidden mx-4 bg-card border border-border p-3">
+          <View className="flex-row items-end justify-between mb-2">
+            <Text className="text-lg font-semibold text-text">
+              {displayedChartPrice == null ? '--' : `Rs. ${displayedChartPrice.toFixed(2)}`}
+            </Text>
+            <Text className="text-xs text-textSecondary">
+              {displayedChartTime == null ? '' : new Date(displayedChartTime * 1000).toLocaleDateString()}
+            </Text>
+          </View>
+          {isLoadingChart ? (
+            <View className="h-60 items-center justify-center">
+              <ActivityIndicator color={colors.primary} />
+              <Text className="mt-2 text-sm text-textSecondary">Loading price history…</Text>
+            </View>
+          ) : chartError ? (
+            <View className="h-60 items-center justify-center px-6">
+              <Text className="text-center text-negative">{chartError}</Text>
+              <TouchableOpacity className="mt-3 rounded-lg bg-primary px-4 py-2" onPress={fetchChartDataCallback}>
+                <Text className="font-medium text-white">Retry chart</Text>
+              </TouchableOpacity>
+            </View>
+          ) : chartData.length === 0 ? (
+            <View className="h-60 items-center justify-center">
+              <Text className="text-textSecondary">No history is available for this range.</Text>
+            </View>
+          ) : (
+            <StockHistoryChart
+              data={chartData}
+              height={240}
+              lineColor={iconColor}
+              chartBackgroundColor={colors.card}
+              onCrosshairMove={handleChartHover}
+              onInteractionEnd={handleChartInteractionEnd}
+            />
+          )}
         </View>
         
         {/* Time Range Selector */}
@@ -363,7 +397,6 @@ const StockDetailScreen = ({ route, navigation }: StockDetailScreenProps) => {
                   </Text>
                 </TouchableOpacity>
             ))}
-              {/* TODO: Add Chart Type Selector (Line/Candle) here if needed */}
             </ScrollView>
         </View>
 
@@ -371,11 +404,11 @@ const StockDetailScreen = ({ route, navigation }: StockDetailScreenProps) => {
         <View className="bg-card rounded-lg p-4 mx-4 mb-4 border border-border">
             <Text className="text-lg font-semibold text-text mb-3">Key Statistics</Text>
             <View className="flex-row justify-between mb-2">
-                <StatCard label="Open" value={priceDetails?.lastTradedPrice} /> 
-                <StatCard label="High" value={priceDetails?.lastTradedPrice} /> 
+                <StatCard label="Open" value={priceDetails?.openPrice} />
+                <StatCard label="High" value={priceDetails?.highPrice} />
             </View>
             <View className="flex-row justify-between">
-                <StatCard label="Low" value={priceDetails?.lastTradedPrice} />
+                <StatCard label="Low" value={priceDetails?.lowPrice} />
                 <StatCard label="Prev. Close" value={priceDetails?.previousClose} />
             </View>
         </View>
@@ -405,7 +438,7 @@ const StockDetailScreen = ({ route, navigation }: StockDetailScreenProps) => {
             </View>
             <View className="flex-row justify-between">
                 <Text className="text-textSecondary">Avg. Cost:</Text>
-                <Text className="text-text font-medium">₹ {portfolioHolding.averagePurchasePrice.toFixed(2)}</Text>
+                <Text className="text-text font-medium">Rs. {portfolioHolding.averagePurchasePrice.toFixed(2)}</Text>
             </View>
           </View>
         )}
@@ -437,23 +470,9 @@ const StatCard = ({ label, value }: { label: string, value: string | number | nu
     <View className="flex-1 items-center px-1">
         <Text className="text-xs text-textSecondary mb-1">{label}</Text>
         <Text className="text-sm font-semibold text-text">
-            {typeof value === 'number' ? `₹ ${value.toFixed(2)}` : value ?? '--'}
+            {typeof value === 'number' && value > 0 ? `Rs. ${value.toFixed(2)}` : value || '--'}
         </Text>
     </View>
 );
 
-const styles = StyleSheet.create({
-  // Potentially add styles for Range Selector if needed, though Tailwind is preferred
-  rangeButton: {
-    // paddingHorizontal: 12,
-    // paddingVertical: 6,
-    // borderRadius: 15,
-    // marginHorizontal: 4,
-    // borderWidth: 1,
-  },
-  rangeButtonText: {
-    // fontSize: 13,
-  }
-});
-
-export default StockDetailScreen; 
+export default StockDetailScreen;

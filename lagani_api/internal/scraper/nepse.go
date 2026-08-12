@@ -1,7 +1,7 @@
 package scraper
 
 import (
-	"database/sql"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -45,6 +45,7 @@ const (
 	// Constants that are less likely to change or not URLs
 	nepseRequestDelay  = 1 * time.Second
 	tokenCacheDuration = 45 * time.Second
+	maxTopMovers       = 10
 )
 
 // --- Structs specific to NEPSE API responses ---
@@ -99,6 +100,7 @@ type NepseTopGainerLoser struct {
 
 // NepseMarketStatus matches the structure from the NEPSE market status API.
 type NepseMarketStatus struct {
+	ID     int    `json:"id"`
 	IsOpen string `json:"isOpen"`
 	AsOf   string `json:"asOf"`
 }
@@ -142,6 +144,27 @@ type NepseScraper struct {
 	currentToken       string
 	currentTokenExpiry time.Time
 	tokenMutex         sync.Mutex // Use a simple mutex for token updates
+
+	marketStatusMutex     sync.Mutex
+	currentMarketStatusID int
+}
+
+// The NEPSE web client uses this server-provided market-status ID as an index
+// into a static challenge table when creating graph endpoint request bodies.
+// This table mirrors the current official client bundle. Bounds checks and a
+// live integration test make upstream changes fail loudly instead of silently
+// returning HTTP 500 responses.
+var nepseDummyData = [...]int{
+	147, 117, 239, 143, 157, 312, 161, 612, 512, 804,
+	411, 527, 170, 511, 421, 667, 764, 621, 301, 106,
+	133, 793, 411, 511, 312, 423, 344, 346, 653, 758,
+	342, 222, 236, 811, 711, 611, 122, 447, 128, 199,
+	183, 135, 489, 703, 800, 745, 152, 863, 134, 211,
+	142, 564, 375, 793, 212, 153, 138, 153, 648, 611,
+	151, 649, 318, 143, 117, 756, 119, 141, 717, 113,
+	112, 146, 162, 660, 693, 261, 362, 354, 251, 641,
+	157, 178, 631, 192, 734, 445, 192, 883, 187, 122,
+	591, 731, 852, 384, 565, 596, 451, 772, 624, 691,
 }
 
 // NewNepseScraper creates a new NepseScraper.
@@ -342,48 +365,81 @@ func (s *NepseScraper) getValidToken() (string, error) {
 	return newToken, nil
 }
 
+func (s *NepseScraper) getMarketStatusID() (int, error) {
+	s.marketStatusMutex.Lock()
+	defer s.marketStatusMutex.Unlock()
+	if s.currentMarketStatusID > 0 {
+		return s.currentMarketStatusID, nil
+	}
+
+	var status NepseMarketStatus
+	if err := s.fetchNepseDataAuth(marketStatusURLValue, &status); err != nil {
+		return 0, fmt.Errorf("failed to fetch market status challenge ID: %w", err)
+	}
+	if status.ID <= 0 || status.ID >= len(nepseDummyData) {
+		return 0, fmt.Errorf("NEPSE returned unsupported market status ID %d", status.ID)
+	}
+	s.currentMarketStatusID = status.ID
+	return status.ID, nil
+}
+
+func nepseGraphRequestID(marketStatusID int, now time.Time) (int, error) {
+	if marketStatusID <= 0 || marketStatusID >= len(nepseDummyData) {
+		return 0, fmt.Errorf("market status ID %d is outside the NEPSE challenge table", marketStatusID)
+	}
+	npt, err := time.LoadLocation("Asia/Kathmandu")
+	if err != nil {
+		return 0, fmt.Errorf("failed to load Asia/Kathmandu timezone: %w", err)
+	}
+	day := now.In(npt).Day()
+	return nepseDummyData[marketStatusID] + marketStatusID + 2*day, nil
+}
+
 // --- Generic Fetch Function (Auth Required) ---
 func (s *NepseScraper) fetchNepseDataAuth(url string, target interface{}) error {
-	salterToken, err := s.getValidToken()
-	if err != nil {
-		return fmt.Errorf("fetchNepseDataAuth: failed to get valid token: %w", err)
+	for attempt := 0; attempt < 2; attempt++ {
+		salterToken, err := s.getValidToken()
+		if err != nil {
+			return fmt.Errorf("fetchNepseDataAuth: failed to get valid token: %w", err)
+		}
+
+		time.Sleep(nepseRequestDelay)
+		req, err := http.NewRequest("GET", url, nil)
+		if err != nil {
+			return fmt.Errorf("fetchNepseDataAuth: failed to create request for %s: %w", url, err)
+		}
+		req.Header.Set("Authorization", "Salter "+salterToken)
+		req.Header.Set("Accept", "application/json, text/plain, */*")
+		req.Header.Set("User-Agent", defaultUserAgent)
+		req.Header.Set("Referer", nepseBaseURLValue)
+
+		resp, err := s.HTTPClient.Do(req)
+		if err != nil {
+			return fmt.Errorf("fetchNepseDataAuth: failed to execute request for %s: %w", url, err)
+		}
+		bodyBytes, readErr := io.ReadAll(io.LimitReader(resp.Body, 20<<20))
+		resp.Body.Close()
+		if readErr != nil {
+			return fmt.Errorf("fetchNepseDataAuth: failed to read response body for %s: %w", url, readErr)
+		}
+
+		if (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) && attempt == 0 {
+			s.tokenMutex.Lock()
+			s.currentToken = ""
+			s.currentTokenExpiry = time.Time{}
+			s.tokenMutex.Unlock()
+			continue
+		}
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("fetchNepseDataAuth: request to %s failed status %d: %s", url, resp.StatusCode, truncateForError(bodyBytes))
+		}
+
+		if err := json.Unmarshal(bodyBytes, target); err != nil {
+			return fmt.Errorf("fetchNepseDataAuth: failed to decode JSON for %s: %w", url, err)
+		}
+		return nil
 	}
-
-	log.Printf("NEPSE Scraper: Waiting before requesting %s", url)
-	time.Sleep(nepseRequestDelay)
-	log.Printf("NEPSE Scraper: Requesting %s", url)
-
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return fmt.Errorf("fetchNepseDataAuth: failed to create request for %s: %w", url, err)
-	}
-	req.Header.Set("Authorization", "Salter "+salterToken)
-	req.Header.Set("Accept", "application/json, text/plain, */*")
-	req.Header.Set("User-Agent", defaultUserAgent)
-	req.Header.Set("Referer", nepseBaseURLValue)
-
-	resp, err := s.HTTPClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("fetchNepseDataAuth: failed to execute request for %s: %w", url, err)
-	}
-	defer resp.Body.Close()
-
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("fetchNepseDataAuth: failed to read response body for %s: %w", url, err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("fetchNepseDataAuth: request to %s failed status %d: %s", url, resp.StatusCode, string(bodyBytes))
-	}
-
-	if err := json.Unmarshal(bodyBytes, target); err != nil {
-		// Log the problematic body for debugging
-		log.Printf("[ERROR] fetchNepseDataAuth: Failed to decode JSON for %s. Body: %s", url, string(bodyBytes))
-		return fmt.Errorf("fetchNepseDataAuth: failed to decode JSON for %s: %w", url, err)
-	}
-
-	return nil
+	return fmt.Errorf("fetchNepseDataAuth: authentication retry exhausted for %s", url)
 }
 
 // --- Scrape Methods ---
@@ -447,8 +503,7 @@ func (s *NepseScraper) ScrapePrices() error {
 	// Transform to models.Price
 	prices := make([]models.Price, 0, len(nepseStats))
 	for _, ns := range nepseStats {
-		// Calculate change
-		change := ns.LastTradedPrice - ns.PreviousClose
+		previousClose, change := normalizeDailyChange(ns.LastTradedPrice, ns.PreviousClose, ns.PercentageChange)
 		prices = append(prices, models.Price{
 			Symbol:          strings.TrimSpace(ns.Symbol),
 			SecurityName:    strings.TrimSpace(ns.SecurityName),
@@ -456,8 +511,8 @@ func (s *NepseScraper) ScrapePrices() error {
 			HighPrice:       ns.HighPrice,
 			LowPrice:        ns.LowPrice,
 			LastTradedPrice: ns.LastTradedPrice,
-			PreviousClose:   ns.PreviousClose,
-			Change:          change, // Store calculated change
+			PreviousClose:   previousClose,
+			Change:          change,
 			PercentChange:   ns.PercentageChange,
 			TotalTradeVol:   ns.TotalTradeQuantity,
 			// UpdatedAt will be set by the repository
@@ -480,6 +535,27 @@ func (s *NepseScraper) ScrapePrices() error {
 	return nil
 }
 
+// normalizeDailyChange fills a gap in the current NEPSE daily-stat response.
+// That response sometimes supplies percentageChange but leaves previousClose at
+// zero. Treating zero as a real close makes the entire LTP appear to be today's
+// gain. When possible, recover the previous close from the percentage relation:
+//
+//	LTP = previousClose * (1 + percentageChange/100)
+//
+// The exchange rounds percentageChange, so the recovered price is approximate,
+// but it is materially more accurate than exposing a fabricated full-price move.
+func normalizeDailyChange(lastTradedPrice, previousClose, percentageChange float64) (float64, float64) {
+	if previousClose > 0 {
+		return previousClose, lastTradedPrice - previousClose
+	}
+	if lastTradedPrice <= 0 || percentageChange <= -100 {
+		return 0, 0
+	}
+
+	previousClose = lastTradedPrice / (1 + percentageChange/100)
+	return previousClose, lastTradedPrice - previousClose
+}
+
 // ScrapeMarketStatus fetches the market status from NEPSE and saves it.
 func (s *NepseScraper) ScrapeMarketStatus() error {
 	log.Println("NEPSE Scraper: Starting market status scrape...")
@@ -492,20 +568,16 @@ func (s *NepseScraper) ScrapeMarketStatus() error {
 	}
 
 	// Parse the 'AsOf' timestamp string
-	var asOfTime sql.NullTime
+	var asOfTime *time.Time
 	// NEPSE returns time like "2025-05-15T15:00:00" which is local time without offset.
 	// We parse it as such, and then assume it's NPT ("Asia/Kathmandu") and convert to UTC for storage.
 	const nepseTimeLayout = "2006-01-02T15:04:05"
-	if parsedLocalTime, err := time.Parse(nepseTimeLayout, nepseStatus.AsOf); err == nil {
+	if nptLocation, loadErr := time.LoadLocation("Asia/Kathmandu"); loadErr != nil {
+		log.Printf("[WARN] NEPSE Scraper: Could not load Asia/Kathmandu timezone: %v", loadErr)
+	} else if parsedLocalTime, err := time.ParseInLocation(nepseTimeLayout, nepseStatus.AsOf, nptLocation); err == nil {
 		// Assume the parsed time is in Nepal's timezone (NPT)
-		nptLocation, loadErr := time.LoadLocation("Asia/Kathmandu")
-		if loadErr != nil {
-			log.Printf("[WARN] NEPSE Scraper: Could not load Asia/Kathmandu timezone: %v. Storing AsOf time as local.", loadErr)
-			asOfTime = sql.NullTime{Time: parsedLocalTime, Valid: true} // Store as is if NPT load fails
-		} else {
-			nptTime := parsedLocalTime.In(nptLocation)
-			asOfTime = sql.NullTime{Time: nptTime.UTC(), Valid: true} // Convert to UTC
-		}
+		utcTime := parsedLocalTime.UTC()
+		asOfTime = &utcTime
 	} else {
 		log.Printf("[WARN] NEPSE Scraper: Could not parse market status 'AsOf' timestamp '%s' with layout '%s': %v", nepseStatus.AsOf, nepseTimeLayout, err)
 		// Keep asOfTime as invalid (NULL in DB)
@@ -518,7 +590,12 @@ func (s *NepseScraper) ScrapeMarketStatus() error {
 		// UpdatedAt will be set by the repository
 	}
 
-	log.Printf("NEPSE Scraper: Fetched market status: %s (AsOf: %v)", status.Status, status.AsOf.Time)
+	if nepseStatus.ID > 0 {
+		s.marketStatusMutex.Lock()
+		s.currentMarketStatusID = nepseStatus.ID
+		s.marketStatusMutex.Unlock()
+	}
+	log.Printf("NEPSE Scraper: Fetched market status: %s (AsOf: %v)", status.Status, status.AsOf)
 
 	// Save to DB
 	if err := s.StatusRepo.SaveMarketStatus(status); err != nil {
@@ -541,6 +618,9 @@ func (s *NepseScraper) ScrapeTopGainers() error {
 	// Transform to models.Mover
 	movers := make([]models.Mover, 0, len(nepseMovers))
 	for i, nm := range nepseMovers {
+		if i >= maxTopMovers {
+			break
+		}
 		movers = append(movers, models.Mover{
 			Type:          "gainer",
 			Rank:          i + 1, // Rank based on order from API
@@ -581,6 +661,9 @@ func (s *NepseScraper) ScrapeTopLosers() error {
 	// Transform to models.Mover
 	movers := make([]models.Mover, 0, len(nepseMovers))
 	for i, nm := range nepseMovers {
+		if i >= maxTopMovers {
+			break
+		}
 		movers = append(movers, models.Mover{
 			Type:          "loser",
 			Rank:          i + 1,
@@ -612,6 +695,9 @@ func (s *NepseScraper) ScrapeTopLosers() error {
 // FetchHistoricalPriceData retrieves the historical graph data for a specific security ID from NEPSE.
 func (s *NepseScraper) FetchHistoricalPriceData(securityID int) ([]models.HistoricalPriceData, error) {
 	log.Printf("NEPSE Scraper: Fetching historical price data for security ID: %d", securityID)
+	if securityID <= 0 {
+		return nil, fmt.Errorf("security ID must be positive")
+	}
 
 	// Get the URL format from environment variables
 	historicalPricePathFormat := getEnvScraper("NEPSE_HISTORICAL_PRICE_PATH_FORMAT", "/api/nots/market/graphdata/%d") // Default provided
@@ -624,20 +710,20 @@ func (s *NepseScraper) FetchHistoricalPriceData(securityID int) ([]models.Histor
 		return nil, fmt.Errorf("failed to get valid token for historical data: %w", err)
 	}
 
-	// Log detailed request info
-	log.Printf("[DEBUG] Historical Data Request - URL: %s", url)
-	tokenSnippet := ""
-	if len(token) > 10 {
-		tokenSnippet = token[:5] + "..." + token[len(token)-5:]
-	} else {
-		tokenSnippet = token
+	marketStatusID, err := s.getMarketStatusID()
+	if err != nil {
+		return nil, err
 	}
-	log.Printf("[DEBUG] Historical Data Request - Token: %s", tokenSnippet)
-
-	// Create the POST request - NEPSE uses POST but seems to take ID in URL path
-	// Try sending an empty JSON body, as POST might require it.
-	emptyBody := strings.NewReader(`{}`)
-	req, err := http.NewRequest("POST", url, emptyBody) // Send empty JSON body
+	requestID, err := nepseGraphRequestID(marketStatusID, time.Now())
+	if err != nil {
+		return nil, err
+	}
+	body, err := json.Marshal(map[string]int{"id": requestID})
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode historical data request body: %w", err)
+	}
+	time.Sleep(nepseRequestDelay)
+	req, err := http.NewRequest("POST", url, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create historical data request: %w", err)
 	}
@@ -649,14 +735,6 @@ func (s *NepseScraper) FetchHistoricalPriceData(securityID int) ([]models.Histor
 	req.Header.Set("Referer", nepseBaseURLValue)
 	req.Header.Set("Accept", "application/json, text/plain, */*")
 
-	// Log headers before sending
-	log.Println("[DEBUG] Historical Data Request - Headers:")
-	for key, values := range req.Header {
-		for _, value := range values {
-			log.Printf("[DEBUG]   %s: %s", key, value)
-		}
-	}
-
 	// Execute the request
 	resp, err := s.HTTPClient.Do(req)
 	if err != nil {
@@ -664,11 +742,8 @@ func (s *NepseScraper) FetchHistoricalPriceData(securityID int) ([]models.Histor
 	}
 	defer resp.Body.Close()
 
-	// Log response status
-	log.Printf("[DEBUG] Historical Data Response - Status Code: %d", resp.StatusCode)
-
 	// Read body for potential error messages or successful response
-	bodyBytes, readErr := io.ReadAll(resp.Body)
+	bodyBytes, readErr := io.ReadAll(io.LimitReader(resp.Body, 20<<20))
 	if readErr != nil {
 		log.Printf("[WARN] Failed to read response body for historical data ID %d: %v", securityID, readErr)
 		// Continue processing based on status code anyway
@@ -676,16 +751,12 @@ func (s *NepseScraper) FetchHistoricalPriceData(securityID int) ([]models.Histor
 
 	// Check response status
 	if resp.StatusCode != http.StatusOK {
-		// Log the raw body received on error
-		log.Printf("[DEBUG] Historical Data Response - Raw Body (Error %d): %s", resp.StatusCode, string(bodyBytes))
-		return nil, fmt.Errorf("historical data request for ID %d failed with status %d: %s", securityID, resp.StatusCode, string(bodyBytes))
+		return nil, fmt.Errorf("historical data request for ID %d failed with status %d: %s", securityID, resp.StatusCode, truncateForError(bodyBytes))
 	}
 
 	// Decode the JSON response using the already read body bytes
 	var historicalData []models.HistoricalPriceData
 	if err := json.Unmarshal(bodyBytes, &historicalData); err != nil {
-		// Log the body again if JSON decoding fails
-		log.Printf("[DEBUG] Historical Data Response - Raw Body (JSON Decode Error): %s", string(bodyBytes))
 		return nil, fmt.Errorf("failed to decode historical data JSON for ID %d: %w", securityID, err)
 	}
 
@@ -696,63 +767,23 @@ func (s *NepseScraper) FetchHistoricalPriceData(securityID int) ([]models.Histor
 // FetchGraphData fetches graph data (OHLCV) for a given security ID from NEPSE.
 // This endpoint typically requires a POST request.
 func (s *NepseScraper) FetchGraphData(securityID int) ([]NepseGraphDataPoint, error) {
-	salterToken, err := s.getValidToken()
+	historicalData, err := s.FetchHistoricalPriceData(securityID)
 	if err != nil {
-		return nil, fmt.Errorf("FetchGraphData: failed to get valid token: %w", err)
+		return nil, err
 	}
-
-	graphURL := fmt.Sprintf(graphDataURLFormat, securityID)
-
-	// Log token snippet for debugging
-	tokenSnippet := ""
-	if len(salterToken) > 10 {
-		tokenSnippet = salterToken[:5] + "..." + salterToken[len(salterToken)-5:]
-	} else {
-		tokenSnippet = salterToken
+	graphData := make([]NepseGraphDataPoint, 0, len(historicalData))
+	for _, point := range historicalData {
+		graphData = append(graphData, NepseGraphDataPoint{
+			BusinessDate:          point.BusinessDate,
+			OpenPrice:             point.OpenPrice,
+			HighPrice:             point.HighPrice,
+			LowPrice:              point.LowPrice,
+			PreviousDayClosePrice: point.PreviousDayClosePrice,
+			ClosePrice:            point.ClosePrice,
+			LastTradedPrice:       point.LastTradedPrice,
+			TotalTradedQuantity:   point.TotalTradedQuantity,
+			FiftyTwoWeekHigh:      point.FiftyTwoWeekHigh,
+		})
 	}
-	log.Printf("[DEBUG] FetchGraphData - URL: %s, Token: %s", graphURL, tokenSnippet)
-
-	log.Printf("NEPSE Scraper: Waiting before requesting POST %s", graphURL)
-	time.Sleep(nepseRequestDelay)
-	log.Printf("NEPSE Scraper: Requesting POST %s for security ID %d", graphURL, securityID)
-
-	// Create a new POST request. Send an empty JSON object as the body.
-	emptyBody := strings.NewReader("{}")
-	req, err := http.NewRequest("POST", graphURL, emptyBody) // Changed from nil to emptyBody
-	if err != nil {
-		return nil, fmt.Errorf("FetchGraphData: failed to create POST request for %s: %w", graphURL, err)
-	}
-
-	// Set headers
-	req.Header.Set("Authorization", "Salter "+salterToken)
-	req.Header.Set("Content-Type", "application/json") // Good practice, even with no body
-	req.Header.Set("Accept", "application/json, text/plain, */*")
-	req.Header.Set("User-Agent", defaultUserAgent)
-	req.Header.Set("Referer", nepseBaseURLValue) // Add Referer, common in web scraping
-	req.Header.Set("Origin", nepseBaseURLValue)  // Add Origin, sometimes required for POST
-
-	resp, err := s.HTTPClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("FetchGraphData: failed to execute POST request for %s: %w", graphURL, err)
-	}
-	defer resp.Body.Close()
-
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("FetchGraphData: failed to read response body for %s: %w", graphURL, err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		log.Printf("[ERROR] FetchGraphData: Request to %s failed. Status: %d. Body: %s", graphURL, resp.StatusCode, string(bodyBytes))
-		return nil, fmt.Errorf("FetchGraphData: request to %s failed status %d: %s", graphURL, resp.StatusCode, string(bodyBytes))
-	}
-
-	var graphData []NepseGraphDataPoint
-	if err := json.Unmarshal(bodyBytes, &graphData); err != nil {
-		log.Printf("[ERROR] FetchGraphData: Failed to decode JSON for %s. Body: %s", graphURL, string(bodyBytes))
-		return nil, fmt.Errorf("FetchGraphData: failed to decode JSON for %s: %w", graphURL, err)
-	}
-
-	log.Printf("NEPSE Scraper: Successfully fetched %d graph data points for Security ID %d from %s.", len(graphData), securityID, graphURL)
 	return graphData, nil
 }

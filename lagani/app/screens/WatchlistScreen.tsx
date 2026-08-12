@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useCallback } from 'react';
 import { View, Text, TouchableOpacity, FlatList, TextInput, ActivityIndicator, StyleSheet } from 'react-native'; // Added StyleSheet
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -23,42 +23,6 @@ type WatchlistScreenNavigationProp = CompositeNavigationProp<
 
 // Simplified WatchlistItem for this screen - gets data from DB which includes price/change
 interface WatchlistItem extends DbWatchlistItemBase {}
-
-interface WatchlistItemCardProps {
-  item: WatchlistItem;
-  onPress: (symbol: string, name: string) => void;
-  onDelete: (symbol: string) => void;
-}
-
-const WatchlistItemCard = ({ item, onPress, onDelete }: WatchlistItemCardProps) => {
-  const changeColor = item.changePercent == null || item.changePercent >= 0 ? styles.positiveChange : styles.negativeChange;
-  const price = item.lastPrice != null ? item.lastPrice.toFixed(2) : '--';
-  const changeText = item.changePercent != null ? `${item.changePercent >= 0 ? '+' : ''}${item.changePercent.toFixed(2)}%` : '--%';
-
-  return (
-    // Remove border-border
-    <TouchableOpacity 
-      style={styles.cardContainer} 
-      onPress={() => onPress(item.symbol, item.name)}
-    >
-        <View style={styles.logoContainer}>
-             <Text style={styles.logoText}>{item.symbol?.charAt(0) ?? '?'}</Text>
-        </View>
-        <View style={styles.infoContainer}>
-            <Text style={styles.symbolText} numberOfLines={1}>{item.symbol}</Text>
-            <Text style={styles.nameText} numberOfLines={1}>{item.name}</Text>
-        </View>
-        <View style={styles.priceContainer}>
-            <Text style={styles.priceText}>₹ {price}</Text>
-            <Text style={[styles.changeText, changeColor]}>{changeText}</Text>
-        </View>
-        {/* Delete Button */}
-        <TouchableOpacity onPress={() => onDelete(item.symbol)} style={styles.removeButton}>
-           <Ionicons name="trash-outline" size={20} color={colors.negative} /> 
-        </TouchableOpacity>
-    </TouchableOpacity>
-  );
-};
 
 const WatchlistScreen = () => {
   const navigation = useNavigation<WatchlistScreenNavigationProp>();
@@ -140,42 +104,43 @@ const WatchlistScreen = () => {
   };
 
   // Key extractor
-  const keyExtractor = (item: WatchlistItem) => item.id.toString();
+  const keyExtractor = (item: WatchlistItem) => item.symbol;
 
   // Render Item - Use data directly from WatchlistItem (which includes price/change)
    const renderItem = ({ item }: { item: WatchlistItem }) => {
     const price = item.lastPrice;
     const changePercentage = item.changePercent;
     const changeColor = changePercentage == null || changePercentage >= 0 ? styles.positiveChange : styles.negativeChange;
-    const priceDisplay = typeof price === 'number' ? `₹ ${price.toFixed(1)}` : '--'; // Use single dash for N/A
+    const priceDisplay = typeof price === 'number' ? `Rs. ${price.toFixed(1)}` : '--';
     const changePercentDisplay = typeof changePercentage === 'number' ? `${changePercentage >= 0 ? '+' : ''}${changePercentage.toFixed(1)}%` : '--';
 
     return (
-      <TouchableOpacity
+      <View
         style={styles.itemContainer}
-        onPress={() => navigateToStockDetail(item.symbol, item.name)}
       >
-        {/* Stock Info */}
-        <View style={styles.stockInfoContainer}>
-          {/* Placeholder Icon */}
-          <View style={styles.iconPlaceholder}>
-            <Text style={styles.iconText}>{item.symbol.substring(0, 1)}</Text>
+        <TouchableOpacity
+          style={styles.itemMainAction}
+          onPress={() => navigateToStockDetail(item.symbol, item.name)}
+          accessibilityRole="button"
+          accessibilityLabel={`View ${item.symbol} details`}
+        >
+          <View style={styles.stockInfoContainer}>
+            <View style={styles.iconPlaceholder}>
+              <Text style={styles.iconText}>{item.symbol.substring(0, 1)}</Text>
+            </View>
+            <View style={styles.nameContainer}>
+              <Text style={styles.symbolText}>{item.symbol}</Text>
+              <Text style={styles.nameText} numberOfLines={1}>{item.name || 'Loading...'}</Text>
+            </View>
           </View>
-          {/* Symbol and Name */}
-          <View style={styles.nameContainer}>
-            <Text style={styles.symbolText}>{item.symbol}</Text>
-            <Text style={styles.nameText} numberOfLines={1}>{item.name || 'Loading...'}</Text> 
+
+          <View style={styles.priceContainer}>
+             <Text style={styles.priceText}>{priceDisplay}</Text>
+             <Text style={[styles.changeText, changeColor]}>
+                 {changePercentDisplay}
+             </Text>
           </View>
-        </View>
-        
-        {/* Price and Change */}
-        <View style={styles.priceContainer}>
-            {/* Display price/change directly */}
-           <Text style={styles.priceText}>{priceDisplay}</Text>
-           <Text style={[styles.changeText, changeColor]}>
-               {changePercentDisplay}
-           </Text>
-        </View>
+        </TouchableOpacity>
         
         {/* Remove Button */}
         <TouchableOpacity 
@@ -184,10 +149,12 @@ const WatchlistScreen = () => {
             e.stopPropagation();
             handleRemoveFromWatchlist(item.symbol);
           }}
+          accessibilityRole="button"
+          accessibilityLabel={`Remove ${item.symbol} from watchlist`}
         >
           <Ionicons name="trash-outline" size={20} color={colors.negative} /> 
         </TouchableOpacity>
-      </TouchableOpacity>
+      </View>
     );
   };
 
@@ -206,7 +173,11 @@ const WatchlistScreen = () => {
               autoFocus
               placeholderTextColor="#9CA3AF" 
             />
-            <TouchableOpacity onPress={() => { setSearchQuery(''); setIsSearching(false); }}>
+            <TouchableOpacity
+              onPress={() => { setSearchQuery(''); setIsSearching(false); }}
+              accessibilityRole="button"
+              accessibilityLabel="Close watchlist search"
+            >
               <Ionicons name="close-outline" size={22} color="#6B7280" />
             </TouchableOpacity>
           </View>
@@ -215,11 +186,21 @@ const WatchlistScreen = () => {
              <Text style={styles.headerTitle}>Watchlist</Text>
              {/* Container for action icons */}
              <View style={styles.actionIconsContainer}>
-                <TouchableOpacity style={styles.actionIcon} onPress={() => setIsSearching(true)}>
+                <TouchableOpacity
+                  style={styles.actionIcon}
+                  onPress={() => setIsSearching(true)}
+                  accessibilityRole="button"
+                  accessibilityLabel="Search watchlist"
+                >
                    <Ionicons name="search-outline" size={24} color="#1F2937" />
                 </TouchableOpacity>
                 {/* Add the '+' button here */}
-                <TouchableOpacity style={styles.actionIcon} onPress={openAddToWatchlistModal}>
+                <TouchableOpacity
+                  style={styles.actionIcon}
+                  onPress={openAddToWatchlistModal}
+                  accessibilityRole="button"
+                  accessibilityLabel="Add stock to watchlist"
+                >
                    <Ionicons name="add-circle-outline" size={26} color={colors.primary} /> 
                 </TouchableOpacity>
              </View>
@@ -280,6 +261,7 @@ const styles = StyleSheet.create({
   emptyListText: { fontSize: 18, fontWeight: '500', color: '#6B7280', marginTop: 16, textAlign: 'center' },
   emptyListSubtext: { color: '#9CA3AF', marginTop: 8, textAlign: 'center' },
   itemContainer: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 16, marginBottom: 12, backgroundColor: 'white', borderRadius: 12, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.05, shadowRadius: 2, elevation: 1, borderWidth: 1, borderColor: '#E5E7EB' },
+  itemMainAction: { flex: 1, flexDirection: 'row', alignItems: 'center' },
   stockInfoContainer: { flexDirection: 'row', alignItems: 'center', flex: 1, marginRight: 8 },
   iconPlaceholder: { backgroundColor: '#E5E7EB', width: 40, height: 40, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
   iconText: { fontWeight: 'bold', color: '#4B5563' },
@@ -292,52 +274,6 @@ const styles = StyleSheet.create({
   positiveChange: { color: colors.positive }, 
   negativeChange: { color: colors.negative }, 
   removeButton: { marginLeft: 12, padding: 8 }, // Keep first definition
-  cardContainer: { // Keep this set from previous merge attempt
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: colors.card,
-    padding: 12,
-    borderRadius: 8,
-    marginBottom: 10,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 2,
-    elevation: 1,
-  },
-  logoContainer: { // Keep this set
-    width: 40,
-    height: 40,
-    borderRadius: 20, 
-    backgroundColor: colors.border, 
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 12,
-  },
-  logoText: { // Keep this set
-    fontSize: 16,
-    fontWeight: 'bold',
-    color: colors.textSecondary, 
-  },
-  infoContainer: { // Keep this set
-    flex: 1,
-    marginLeft: 12,
-  },
-  // Remove the second, redundant definitions below
-  /*
-  priceContainer: {
-    alignItems: 'flex-end',
-    width: 80,
-  },
-  priceText: {
-    fontWeight: '600',
-    color: '#1F2937',
-  },
-  removeButton: {
-    marginLeft: 12,
-    padding: 8,
-  },
-  */
 });
 
-export default WatchlistScreen; 
+export default WatchlistScreen;

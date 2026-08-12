@@ -85,7 +85,7 @@ const SellStockModal: React.FC<SellStockModalProps> = ({
         quantity: parsedQuantity,
         price: parsedPrice,
       });
-      Alert.alert("Success", `Successfully recorded sale of ${parsedQuantity} shares of ${symbol} at ₹ ${parsedPrice.toFixed(2)}.`);
+      Alert.alert("Success", `Successfully recorded sale of ${parsedQuantity} shares of ${symbol} at Rs. ${parsedPrice.toFixed(2)}.`);
       onTransactionComplete(); // Trigger callback to update source screen
       onClose(); // Close modal after success
     } catch (error: any) {
@@ -141,7 +141,7 @@ const SellStockModal: React.FC<SellStockModalProps> = ({
 
               {/* Sell Price Input */}
               <View style={styles.inputGroup}>
-                <Text style={styles.label}>Price per Share (₹)</Text>
+                <Text style={styles.label}>Price per Share (Rs.)</Text>
                 <TextInput
                   style={[styles.input, errorMsg?.includes('price') && styles.inputError ]}
                   placeholder="e.g., 600.00"
@@ -272,4 +272,4 @@ const styles = StyleSheet.create({
   }
 });
 
-export default SellStockModal; 
+export default SellStockModal;

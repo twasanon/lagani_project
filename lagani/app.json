@@ -1,20 +1,14 @@
 {
   "expo": {
-    "name": "lagani",
+    "name": "Lagani",
     "slug": "lagani",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
-    "newArchEnabled": true,
-    "splash": {
-      "image": "./assets/splash-icon.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
-    },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.anonymous.lagani",
+      "bundleIdentifier": "com.lagani.app",
       "infoPlist": {}
     },
     "android": {
@@ -22,8 +16,7 @@
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
-      "permissions": [],
-      "package": "com.anonymous.lagani"
+      "package": "com.lagani.app"
     },
     "web": {
       "favicon": "./assets/favicon.png",
@@ -31,8 +24,21 @@
     },
     "plugins": [
       "expo-sqlite",
-      "expo-asset",
-      "react-native-webassembly"
+      "expo-background-task",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-icon.png",
+          "resizeMode": "contain",
+          "backgroundColor": "#ffffff"
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "defaultChannel": "price-alerts"
+        }
+      ]
     ]
   }
 }

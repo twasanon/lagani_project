@@ -35,7 +35,7 @@ const StockCard: React.FC<StockCardProps> = ({
       </View>
       
       <View className="items-end">
-        <Text className="font-medium text-dark">₹ {price}</Text>
+        <Text className="font-medium text-dark">Rs. {price}</Text>
         <Text className={`text-xs ${isPositive ? 'text-secondary' : 'text-danger'}`}>
           {isPositive ? '+' : ''}{change}%
         </Text>
@@ -44,4 +44,4 @@ const StockCard: React.FC<StockCardProps> = ({
   );
 };
 
-export default StockCard; 
+export default StockCard;

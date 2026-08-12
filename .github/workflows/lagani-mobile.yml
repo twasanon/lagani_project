@@ -1,0 +1,35 @@
+name: Lagani mobile
+
+on:
+  push:
+    paths:
+      - "lagani/**"
+      - ".github/workflows/lagani-mobile.yml"
+  pull_request:
+    paths:
+      - "lagani/**"
+      - ".github/workflows/lagani-mobile.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: lagani
+    env:
+      EXPO_PUBLIC_API_URL: https://api.example.invalid
+      CI: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: lagani/package-lock.json
+      - run: npm ci
+      - run: npm run verify
+      - run: npx expo export --platform android --output-dir dist/android
+      - run: npx expo export --platform ios --output-dir dist/ios

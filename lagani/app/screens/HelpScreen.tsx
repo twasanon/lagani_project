@@ -14,7 +14,13 @@ const AccordionItem: React.FC<AccordionItemProps> = ({ title, children }) => {
 
   return (
     <View style={styles.accordionItem}>
-      <TouchableOpacity onPress={() => setIsOpen(!isOpen)} style={styles.accordionHeader}>
+      <TouchableOpacity
+        onPress={() => setIsOpen(!isOpen)}
+        style={styles.accordionHeader}
+        accessibilityRole="button"
+        accessibilityState={{ expanded: isOpen }}
+        accessibilityLabel={title}
+      >
         <Text style={styles.accordionTitle}>{title}</Text>
         <Ionicons name={isOpen ? 'chevron-up' : 'chevron-down'} size={20} color={colors.text} />
       </TouchableOpacity>
@@ -46,7 +52,7 @@ const HelpScreen = () => {
           <Text style={styles.listItem}>• <Text style={styles.boldText}>Paper:</Text> A virtual trading simulator to practice buying and selling stocks.</Text>
           <Text style={styles.listItem}>• <Text style={styles.boldText}>Watchlist:</Text> A list of stocks you want to monitor closely.</Text>
           <Text style={styles.listItem}>• <Text style={styles.boldText}>News:</Text> Recent financial news headlines.</Text>
-          <Text style={styles.listItem}>• <Text style={styles.boldText}>Settings:</Text> App settings and options (currently basic).</Text>
+          <Text style={styles.listItem}>• <Text style={styles.boldText}>Settings:</Text> Market refresh, paper-account controls, local-data reset, and help.</Text>
         </AccordionItem>
 
         <AccordionItem title="3. Key Features & How to Use Them">
@@ -63,19 +69,19 @@ const HelpScreen = () => {
 
           <Text style={styles.subHeader}>3.2. Viewing Stock Details</Text>
           <Text style={styles.listItem}>• You can access the `Stock Detail Screen` for any stock by tapping it from search results, top movers, Watchlist, Portfolio, or Paper Trading.</Text>
-          <Text style={styles.listItem}>• This screen shows detailed price information, basic stats (*note: some stats might be placeholders*), and a chart (*note: chart is currently a placeholder*).</Text>
+          <Text style={styles.listItem}>• The screen shows the latest validated price, daily change, available statistics, and backend-cached price history. Missing source values appear as “--” instead of a fabricated zero.</Text>
           <Text style={styles.subHeaderSmall}>Actions (Header Icons):</Text>
           <Text style={styles.listItemIndent}>• <Text style={styles.boldText}>Watchlist (Star Icon ⭐/★):</Text> Tap to add/remove the stock from your Watchlist.</Text>
           <Text style={styles.listItemIndent}>• <Text style={styles.boldText}>Set Alert (Bell Icon 🔔):</Text> Tap to open the `Set Price Alert Modal` (see section 3.6).</Text>
-          <Text style={styles.listItem}>• <Text style={styles.boldText}>Navigation Note:</Text> When you navigate to the `Stock Detail Screen` from the `Home` screen (or elements originating from Home like search results or top movers), the bottom tabs remain visible due to the nested navigation structure. Accessing from Portfolio or Watchlist might behave differently based on the root navigation.</Text>
+          <Text style={styles.listItem}>• The bottom navigation remains available while viewing stock details.</Text>
 
           <Text style={styles.subHeader}>3.3. Managing Your Portfolio</Text>
           <Text style={styles.listItem}>• Go to the <Text style={styles.boldText}>Portfolio</Text> tab.</Text>
-          <Text style={styles.listItem}>• <Text style={styles.boldText}>Adding Transactions:</Text> Use the "+ Add" button on the Home screen (which navigates here) or potentially a dedicated button on this screen in the future.</Text>
+          <Text style={styles.listItem}>• <Text style={styles.boldText}>Adding Transactions:</Text> Use the + button on the Portfolio screen, or the Add Stock shortcut on Home.</Text>
           <Text style={styles.listItemIndent}>  ◦ Select BUY or SELL.</Text>
           <Text style={styles.listItemIndent}>  ◦ Enter the Stock Symbol, Quantity, and Price per share.</Text>
           <Text style={styles.listItemIndent}>  ◦ Tap "Add Transaction".</Text>
-          <Text style={styles.listItem}>• <Text style={styles.boldText}>Viewing Holdings:</Text> Your holdings are grouped by stock symbol. You see the total quantity and average buy price. (*Current value/P&L display is pending*).</Text>
+          <Text style={styles.listItem}>• <Text style={styles.boldText}>Viewing Holdings:</Text> Holdings use moving-average cost accounting and show current value and unrealized profit or loss from the cached market price.</Text>
           <Text style={styles.listItem}>• <Text style={styles.boldText}>Viewing/Managing Individual Lots:</Text> Tap on a stock symbol to expand it. Here you can see individual transactions and use the Sell (redirects to Sell Modal), Edit (✏️), or Delete (🗑️) icons for that specific lot.</Text>
           <Text style={styles.listItem}>• <Text style={styles.boldText}>History:</Text> Tap the "Transaction History" button to view all past transactions.</Text>
 
@@ -97,19 +103,26 @@ const HelpScreen = () => {
           <Text style={styles.listItem}>• Tap the <Text style={styles.boldText}>Set Alert</Text> bell icon (🔔) in the header.</Text>
           <Text style={styles.listItem}>• In the modal, enter the target price and choose the condition (Above/Below).</Text>
           <Text style={styles.listItem}>• Tap "Set Alert".</Text>
-          <Text style={styles.listItem}>• <Text style={styles.boldText}>Notifications:</Text> The app checks locally stored prices against your alerts periodically in the background and sends a notification if a condition is met.</Text>
+          <Text style={styles.listItem}>• <Text style={styles.boldText}>Notifications:</Text> Standalone builds refresh prices before each best-effort background check. Android and iOS decide the actual execution time, so an alert is not guaranteed to arrive at the exact crossing time.</Text>
           <Text style={styles.listItem}>• <Text style={styles.boldText}>Managing Alerts:</Text> Use the <Text style={styles.boldText}>View Alerts</Text> bell icon (🔔) on the `Home` screen header to open the modal where you can view and delete active alerts.</Text>
 
           <Text style={styles.subHeader}>3.7. Reading News</Text>
           <Text style={styles.listItem}>• Go to the <Text style={styles.boldText}>News</Text> tab.</Text>
           <Text style={styles.listItem}>• Displays recent headlines fetched from the backend cache (sourced from Merolagani & Nepalipaisa).</Text>
-          <Text style={styles.listItem}>• Each item shows headline, source, image (using `expo-image`), and date (*Note: Dates may be missing for some sources*).</Text>
+          <Text style={styles.listItem}>• Each item shows its headline, source, image when supplied, and the source publication date when available.</Text>
           <Text style={styles.listItem}>• <Text style={styles.boldText}>Read Full Article:</Text> Tap a news card to open a modal with the article in a `WebView`.</Text>
         </AccordionItem>
 
         <AccordionItem title="4. Settings">
             <Text style={styles.listItem}>• Go to the <Text style={styles.boldText}>Settings</Text> tab.</Text>
-            <Text style={styles.listItem}>• Provides basic options and the button to reset Paper Trading data.</Text>
+            <Text style={styles.listItem}>• Refresh the local market cache, open or reset the paper account, read help, or delete all personal data stored on this device.</Text>
+            <Text style={styles.listItem}>• Reset actions are permanent for the affected local data. Public cached market data is retained by the full personal-data reset.</Text>
+        </AccordionItem>
+
+        <AccordionItem title="5. Important limitations">
+          <Text style={styles.listItem}>• Lagani does not place real orders and is not affiliated with NEPSE.</Text>
+          <Text style={styles.listItem}>• Exchange and third-party source data can be delayed, missing, adjusted, or temporarily unavailable.</Text>
+          <Text style={styles.listItem}>• Portfolio and paper-trading calculations are educational tools, not tax accounting or investment advice.</Text>
         </AccordionItem>
       </ScrollView>
     </SafeAreaView>
@@ -202,4 +215,4 @@ const styles = StyleSheet.create({
   }
 });
 
-export default HelpScreen; 
+export default HelpScreen;

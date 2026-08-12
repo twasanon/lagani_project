@@ -1,7 +1,6 @@
 package models
 
 import (
-	"database/sql"
 	"time"
 )
 
@@ -45,22 +44,22 @@ type Mover struct {
 // MarketStatus represents the current NEPSE market status.
 // This will likely be stored as a single row in the DB.
 type MarketStatus struct {
-	ID        int          `json:"-"`         // Fixed ID (e.g., 1) for single-row table
-	Status    string       `json:"status"`    // e.g., "OPEN", "CLOSE", "PRE_OPEN_CLOSE"
-	AsOf      sql.NullTime `json:"asOf"`      // Timestamp from NEPSE (use sql.NullTime for potential nulls)
-	UpdatedAt time.Time    `json:"updatedAt"` // Timestamp when the status was fetched
+	ID        int        `json:"-"`         // Fixed ID (e.g., 1) for single-row table
+	Status    string     `json:"status"`    // e.g., "OPEN", "CLOSE", "PRE_OPEN_CLOSE"
+	AsOf      *time.Time `json:"asOf"`      // Timestamp from NEPSE, normalized to UTC
+	UpdatedAt time.Time  `json:"updatedAt"` // Timestamp when the status was fetched
 }
 
 // NewsItem represents a single news article.
 type NewsItem struct {
-	ID          int          `json:"id"`                    // Internal DB ID
-	Source      string       `json:"source"`                // e.g., "merolagani", "nepalipaisa"
-	Title       string       `json:"title"`                 // News headline
-	Link        string       `json:"link"`                  // URL to the full article
-	ImageURL    string       `json:"imageUrl"`              // URL of the associated image
-	DateStr     string       `json:"dateStr"`               // Date string as scraped (might be empty)
-	PublishedAt sql.NullTime `json:"publishedAt,omitempty"` // Parsed and standardized datetime
-	ScrapedAt   time.Time    `json:"scrapedAt"`             // Timestamp when the item was scraped
+	ID          int        `json:"id"`                    // Internal DB ID
+	Source      string     `json:"source"`                // e.g., "merolagani", "nepalipaisa"
+	Title       string     `json:"title"`                 // News headline
+	Link        string     `json:"link"`                  // URL to the full article
+	ImageURL    string     `json:"imageUrl"`              // URL of the associated image
+	DateStr     string     `json:"dateStr"`               // Date string as scraped (might be empty)
+	PublishedAt *time.Time `json:"publishedAt,omitempty"` // Parsed and standardized datetime
+	ScrapedAt   time.Time  `json:"scrapedAt"`             // Timestamp when the item was scraped
 }
 
 // HistoricalPriceData represents a single day's price data from NEPSE graph endpoint.
@@ -72,7 +71,7 @@ type HistoricalPriceData struct {
 	LowPrice              float64 `json:"lowPrice"`
 	ClosePrice            float64 `json:"closePrice"`
 	PreviousDayClosePrice float64 `json:"previousDayClosePrice"`
-	TotalTradedQuantity   int     `json:"totalTradedQuantity"`
+	TotalTradedQuantity   int64   `json:"totalTradedQuantity"`
 	LastTradedPrice       float64 `json:"lastTradedPrice"`
 	FiftyTwoWeekHigh      float64 `json:"fiftyTwoWeekHigh"`
 	// Add other fields if needed, e.g., fiftyTwoWeekLow

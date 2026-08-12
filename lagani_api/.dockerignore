@@ -1,0 +1,13 @@
+.git
+.gitignore
+.DS_Store
+.env
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+coverage.out
+lagani-api
+PRICE_UPDATE_FIX.md
+tasks.md
+update_chart_app.md

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"math"
 	"strings"
 	"time"
 
@@ -63,6 +64,12 @@ func (r *PriceRepository) SavePrices(prices []models.Price) error {
 
 	now := time.Now().UTC()
 	for _, price := range prices {
+		price.Symbol = strings.ToUpper(strings.TrimSpace(price.Symbol))
+		price.SecurityName = strings.TrimSpace(price.SecurityName)
+		if price.Symbol == "" || price.HighPrice < price.LowPrice || price.OpenPrice < 0 || price.LastTradedPrice < 0 || price.TotalTradeVol < 0 ||
+			math.IsNaN(price.LastTradedPrice) || math.IsInf(price.LastTradedPrice, 0) {
+			return fmt.Errorf("invalid price record for symbol %q", price.Symbol)
+		}
 		_, err := stmt.Exec(
 			price.Symbol, price.SecurityName, price.OpenPrice, price.HighPrice, price.LowPrice,
 			price.LastTradedPrice, price.PreviousClose, price.Change, price.PercentChange,
@@ -99,7 +106,7 @@ func (r *PriceRepository) GetAllLatestPrices() ([]models.Price, error) {
 	}
 	defer rows.Close()
 
-	var prices []models.Price
+	prices := make([]models.Price, 0)
 	for rows.Next() {
 		var p models.Price
 		err := rows.Scan(
@@ -108,8 +115,7 @@ func (r *PriceRepository) GetAllLatestPrices() ([]models.Price, error) {
 			&p.TotalTradeVol, &p.UpdatedAt,
 		)
 		if err != nil {
-			log.Printf("Error scanning price row: %v", err)
-			continue
+			return nil, fmt.Errorf("failed to scan price row: %w", err)
 		}
 		prices = append(prices, p)
 	}
@@ -142,7 +148,7 @@ func (r *PriceRepository) GetPricesBySymbols(symbols []string) (map[string]model
 	// Convert symbols to []interface{} for Query
 	args := make([]interface{}, len(symbols))
 	for i, s := range symbols {
-		args[i] = s
+		args[i] = strings.ToUpper(strings.TrimSpace(s))
 	}
 
 	rows, err := r.DB.Query(query, args...)
@@ -160,8 +166,7 @@ func (r *PriceRepository) GetPricesBySymbols(symbols []string) (map[string]model
 			&p.TotalTradeVol, &p.UpdatedAt,
 		)
 		if err != nil {
-			log.Printf("Error scanning price row for symbol %s: %v", p.Symbol, err)
-			continue
+			return nil, fmt.Errorf("failed to scan price row by symbol: %w", err)
 		}
 		pricesMap[p.Symbol] = p
 	}

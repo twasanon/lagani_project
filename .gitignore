@@ -1,0 +1,37 @@
+# Local operating-system and editor output
+.DS_Store
+*.swp
+
+# Secrets and local environment files; examples remain tracked
+.env
+.env.local
+.env.*.local
+**/.env
+**/.env.local
+**/.env.*.local
+!.env.example
+!**/.env.example
+
+# JavaScript/Expo/Next build state
+**/node_modules/
+**/.next/
+**/.expo/
+**/dist/
+**/coverage/
+**/*.tsbuildinfo
+
+# Go and local databases
+lagani_api/bin/
+lagani_api/data/
+*.db
+*.db-shm
+*.db-wal
+
+# Local browser/test artifacts
+.playwright-mcp/
+lagani-website-desktop.png
+lagani-website-mobile.png
+
+# Local tool caches and logs
+*.log
+.vercel/

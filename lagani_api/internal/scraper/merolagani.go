@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"net/url"
 	"strings"
@@ -17,14 +18,8 @@ import (
 	"github.com/PuerkitoBio/goquery"
 )
 
-var (
-	merolaganiBaseURLValue  = getEnvScraper("MEROLAGANI_BASE_URL", "https://merolagani.com")
-	merolaganiNewsURLValue  = merolaganiBaseURLValue + getEnvScraper("MEROLAGANI_NEWS_PATH", "/NewsList.aspx")
-	merolaganiChartURLValue = merolaganiBaseURLValue + "/handlers/TechnicalChartHandler.ashx"
-
-	// ErrMerolaganiNoData is returned when Merolagani API indicates no data is available for the query.
-	ErrMerolaganiNoData = errors.New("merolagani: no data available for the given query")
-)
+// ErrMerolaganiNoData is returned when Merolagani API indicates no data is available for the query.
+var ErrMerolaganiNoData = errors.New("merolagani: no data available for the given query")
 
 const (
 	maxMerolaganiItems = 15 // Fetch more items initially
@@ -57,13 +52,20 @@ type ChartDataPoint struct {
 type MerolaganiScraper struct {
 	NewsRepo   *database.NewsRepository
 	HTTPClient *http.Client
+	BaseURL    string
+	NewsURL    string
+	ChartURL   string
 }
 
 // NewMerolaganiScraper creates a new MerolaganiScraper.
 func NewMerolaganiScraper(newsRepo *database.NewsRepository) *MerolaganiScraper {
+	baseURL := strings.TrimRight(getEnvScraper("MEROLAGANI_BASE_URL", "https://merolagani.com"), "/")
 	return &MerolaganiScraper{
 		NewsRepo:   newsRepo,
 		HTTPClient: &http.Client{Timeout: 20 * time.Second},
+		BaseURL:    baseURL,
+		NewsURL:    baseURL + getEnvScraper("MEROLAGANI_NEWS_PATH", "/NewsList.aspx"),
+		ChartURL:   baseURL + getEnvScraper("MEROLAGANI_CHART_PATH", "/handlers/TechnicalChartHandler.ashx"),
 	}
 }
 
@@ -71,7 +73,7 @@ func NewMerolaganiScraper(newsRepo *database.NewsRepository) *MerolaganiScraper 
 func (s *MerolaganiScraper) ScrapeNews() error {
 	log.Println("Starting Merolagani news scrape...")
 
-	req, err := http.NewRequest("GET", merolaganiNewsURLValue, nil)
+	req, err := http.NewRequest("GET", s.NewsURL, nil)
 	if err != nil {
 		return fmt.Errorf("merolagani: failed to create request: %w", err)
 	}
@@ -84,17 +86,20 @@ func (s *MerolaganiScraper) ScrapeNews() error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("merolagani: request failed with status %d: %s", resp.StatusCode, string(bodyBytes))
+		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("merolagani: request failed with status %d: %s", resp.StatusCode, truncateForError(bodyBytes))
 	}
 
-	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	doc, err := goquery.NewDocumentFromReader(io.LimitReader(resp.Body, 5<<20))
 	if err != nil {
 		return fmt.Errorf("merolagani: failed to parse HTML: %w", err)
 	}
 
 	var newsItems []models.NewsItem
-	merolaganiParsedURL, _ := url.Parse(merolaganiBaseURLValue)
+	merolaganiParsedURL, err := url.Parse(s.BaseURL)
+	if err != nil {
+		return fmt.Errorf("merolagani: invalid base URL: %w", err)
+	}
 
 	doc.Find("div.news-list div.media-news").Each(func(i int, sel *goquery.Selection) {
 		if len(newsItems) >= maxMerolaganiItems {
@@ -115,11 +120,12 @@ func (s *MerolaganiScraper) ScrapeNews() error {
 
 		if title != "" && absoluteLink != "" {
 			newsItems = append(newsItems, models.NewsItem{
-				Source:   "merolagani", // Set source
-				Title:    title,
-				Link:     absoluteLink,
-				ImageURL: absoluteImageURL,
-				DateStr:  dateStr,
+				Source:      "merolagani", // Set source
+				Title:       title,
+				Link:        absoluteLink,
+				ImageURL:    absoluteImageURL,
+				DateStr:     dateStr,
+				PublishedAt: parseMerolaganiPublishedAt(dateStr),
 				// ScrapedAt will be set by the repository
 			})
 		} else {
@@ -128,9 +134,7 @@ func (s *MerolaganiScraper) ScrapeNews() error {
 	})
 
 	if len(newsItems) == 0 {
-		log.Println("[WARN] Merolagani: No news items could be parsed. Structure might have changed.")
-		// Return nil error, as it might not be a fatal error, just no news
-		return nil
+		return fmt.Errorf("merolagani: no news items could be parsed; page structure may have changed")
 	}
 
 	log.Printf("Merolagani: Parsed %d news items.", len(newsItems))
@@ -141,12 +145,17 @@ func (s *MerolaganiScraper) ScrapeNews() error {
 		return fmt.Errorf("merolagani: failed to save news items to db: %w", err)
 	}
 
-	log.Printf("Merolagani: Successfully saved %d new news items to database.", rowsAffected)
+	log.Printf("Merolagani: Successfully upserted %d news items.", rowsAffected)
 	return nil
 }
 
 // FetchChartData fetches historical chart data for a given symbol from Merolagani.
 func (s *MerolaganiScraper) FetchChartData(symbol string, resolution string, rangeStartDate int64, rangeEndDate int64, isAdjust bool) ([]ChartDataPoint, error) {
+	symbol = strings.ToUpper(strings.TrimSpace(symbol))
+	resolution = strings.ToUpper(strings.TrimSpace(resolution))
+	if symbol == "" || (resolution != "1D" && resolution != "1W" && resolution != "1M") || rangeStartDate <= 0 || rangeEndDate <= rangeStartDate {
+		return nil, fmt.Errorf("merolagani: invalid chart symbol, resolution, or date range")
+	}
 	log.Printf("Merolagani Scraper: Fetching chart data for Symbol %s, Resolution: %s, Start: %d, End: %d, Adjust: %t",
 		symbol, resolution, rangeStartDate, rangeEndDate, isAdjust)
 
@@ -156,7 +165,7 @@ func (s *MerolaganiScraper) FetchChartData(symbol string, resolution string, ran
 	}
 
 	// Construct the URL with query parameters
-	reqURL, err := url.Parse(merolaganiChartURLValue)
+	reqURL, err := url.Parse(s.ChartURL)
 	if err != nil {
 		return nil, fmt.Errorf("merolagani: failed to parse chart base URL: %w", err)
 	}
@@ -181,7 +190,7 @@ func (s *MerolaganiScraper) FetchChartData(symbol string, resolution string, ran
 
 	// Set headers - Referer is important
 	req.Header.Set("User-Agent", defaultUserAgentMerolagani)
-	req.Header.Set("Referer", fmt.Sprintf("%s/CompanyDetail.aspx?symbol=%s", merolaganiBaseURLValue, symbol))
+	req.Header.Set("Referer", fmt.Sprintf("%s/CompanyDetail.aspx?symbol=%s", s.BaseURL, symbol))
 	req.Header.Set("Accept", "text/plain; charset=utf-8") // As seen in browser
 	// Add other headers if needed, e.g. X-Requested-With, sec-ch-ua etc but start minimal
 
@@ -191,19 +200,17 @@ func (s *MerolaganiScraper) FetchChartData(symbol string, resolution string, ran
 	}
 	defer resp.Body.Close()
 
-	bodyBytes, err := io.ReadAll(resp.Body)
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 20<<20))
 	if err != nil {
 		return nil, fmt.Errorf("merolagani: failed to read chart data response body for %s: %w", symbol, err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		log.Printf("[ERROR] Merolagani Chart: Request for %s failed. Status: %d. Body: %s", symbol, resp.StatusCode, string(bodyBytes))
-		return nil, fmt.Errorf("merolagani: chart data request for %s failed status %d: %s", symbol, resp.StatusCode, string(bodyBytes))
+		return nil, fmt.Errorf("merolagani: chart data request for %s failed status %d: %s", symbol, resp.StatusCode, truncateForError(bodyBytes))
 	}
 
 	var chartResponse MerolaganiChartResponse
 	if err := json.Unmarshal(bodyBytes, &chartResponse); err != nil {
-		log.Printf("[ERROR] Merolagani Chart: Failed to decode JSON for %s. Body: %s", symbol, string(bodyBytes))
 		return nil, fmt.Errorf("merolagani: failed to decode chart data JSON for %s: %w", symbol, err)
 	}
 
@@ -229,18 +236,96 @@ func (s *MerolaganiScraper) FetchChartData(symbol string, resolution string, ran
 	}
 
 	// Convert to []ChartDataPoint
-	dataPoints := make([]ChartDataPoint, lenT)
+	dataPoints := make([]ChartDataPoint, 0, lenT)
+	normalizedCandles := 0
+	skippedCandles := 0
 	for i := 0; i < lenT; i++ {
-		dataPoints[i] = ChartDataPoint{
-			Timestamp: chartResponse.T[i],
-			Open:      chartResponse.O[i],
-			High:      chartResponse.H[i],
-			Low:       chartResponse.L[i],
-			Close:     chartResponse.C[i],
-			Volume:    chartResponse.V[i],
+		if !isUsableMerolaganiCandle(
+			chartResponse.T[i],
+			chartResponse.O[i],
+			chartResponse.H[i],
+			chartResponse.L[i],
+			chartResponse.C[i],
+			chartResponse.V[i],
+		) {
+			skippedCandles++
+			continue
 		}
+		open, high, low, close := normalizeMerolaganiOHLC(
+			chartResponse.O[i],
+			chartResponse.H[i],
+			chartResponse.L[i],
+			chartResponse.C[i],
+		)
+		if high != chartResponse.H[i] || low != chartResponse.L[i] {
+			normalizedCandles++
+		}
+		dataPoints = append(dataPoints, ChartDataPoint{
+			Timestamp: chartResponse.T[i],
+			Open:      open,
+			High:      high,
+			Low:       low,
+			Close:     close,
+			Volume:    chartResponse.V[i],
+		})
+	}
+	if skippedCandles > 0 {
+		log.Printf("[WARN] Merolagani Chart: Skipped %d candle(s) with non-positive/non-finite prices, invalid timestamps, or negative volume for %s.", skippedCandles, symbol)
+	}
+	if normalizedCandles > 0 {
+		log.Printf("[WARN] Merolagani Chart: Normalized %d adjusted candle(s) with inconsistent high/low bounds for %s.", normalizedCandles, symbol)
 	}
 
 	log.Printf("Merolagani Scraper: Successfully fetched and processed %d chart data points for %s.", len(dataPoints), symbol)
 	return dataPoints, nil
+}
+
+func isUsableMerolaganiCandle(timestamp int64, open, high, low, close, volume float64) bool {
+	if timestamp <= 0 || open <= 0 || high <= 0 || low <= 0 || close <= 0 || volume < 0 {
+		return false
+	}
+	for _, value := range []float64{open, high, low, close, volume} {
+		if math.IsNaN(value) || math.IsInf(value, 0) {
+			return false
+		}
+	}
+	return true
+}
+
+// normalizeMerolaganiOHLC repairs a documented property of the provider's
+// adjusted series: corporate-action adjustments and per-field rounding can
+// leave high below open/close or low above open/close. Expanding the bounds is
+// lossless for the quoted open and close and prevents one historical anomaly
+// from discarding an otherwise valid multi-year series.
+func normalizeMerolaganiOHLC(open, high, low, close float64) (float64, float64, float64, float64) {
+	if open > high {
+		high = open
+	}
+	if close > high {
+		high = close
+	}
+	if open < low {
+		low = open
+	}
+	if close < low {
+		low = close
+	}
+	return open, high, low, close
+}
+
+func parseMerolaganiPublishedAt(value string) *time.Time {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	npt, err := time.LoadLocation("Asia/Kathmandu")
+	if err != nil {
+		return nil
+	}
+	parsed, err := time.ParseInLocation("Jan 2, 2006 03:04 PM", value, npt)
+	if err != nil {
+		return nil
+	}
+	utc := parsed.UTC()
+	return &utc
 }

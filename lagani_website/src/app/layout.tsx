@@ -1,31 +1,47 @@
-import type { Metadata } from "next";
-// import { Geist, Geist_Mono } from "next/font/google"; // Remove Geist fonts
-import { Manrope } from 'next/font/google'; // Import Manrope
+import type { Metadata, Viewport } from "next";
+
+import { getPublicSiteConfig } from "@/lib/site-config";
+
 import "./globals.css";
 
-// Configure Manrope font
-const manrope = Manrope({
-  subsets: ['latin'],
-  display: 'swap',
-  variable: '--font-manrope', // Define CSS variable
-});
+const config = getPublicSiteConfig();
 
 export const metadata: Metadata = {
-  title: "Lagani - Nepal Finance App", // Updated Title
-  description: "Track NEPSE investments, paper trade, view market data, and get news.", // Updated Description
+  metadataBase: config.siteUrl,
+  title: {
+    default: "Lagani — NEPSE portfolio and paper trading",
+    template: "%s | Lagani",
+  },
+  description:
+    "Track NEPSE holdings, practice paper trading, follow companies, and review the latest available Nepal market data.",
+  applicationName: "Lagani",
+  alternates: { canonical: "/" },
+  openGraph: {
+    title: "Lagani — Your NEPSE portfolio, in focus",
+    description:
+      "Portfolio tracking, paper trading, company watchlists, historical charts, and Nepal market news.",
+    type: "website",
+    url: "/",
+    siteName: "Lagani",
+  },
+  twitter: {
+    card: "summary",
+    title: "Lagani — Your NEPSE portfolio, in focus",
+    description: "NEPSE portfolio tracking and educational tools.",
+  },
 };
 
-export default function RootLayout({
-  children,
-}: Readonly<{
-  children: React.ReactNode;
-}>) {
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  themeColor: "#07100d",
+  colorScheme: "dark",
+};
+
+export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="en">
-      {/* Apply Manrope font variable to body */}
-      <body className={`${manrope.variable} font-sans antialiased`}>
-        {children}
-      </body>
+      <body>{children}</body>
     </html>
   );
 }

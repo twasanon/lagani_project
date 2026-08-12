@@ -1,150 +1,141 @@
 import './global.css';
+import React, { useCallback, useEffect, useState } from 'react';
+import { ActivityIndicator, Platform, Pressable, Text, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
-import React, { useEffect } from 'react';
-import { LogBox, Platform } from 'react-native';
-import RootNavigator from './app/navigation/RootNavigator';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
-import { useColorScheme } from 'nativewind';
 import * as TaskManager from 'expo-task-manager';
-import * as BackgroundFetch from 'expo-background-fetch';
+import * as BackgroundTask from 'expo-background-task';
 import * as Notifications from 'expo-notifications';
-import {
-  initializeDatabaseSync,
-  initDatabaseSchema,
-  getActivePriceAlerts,
-  deactivatePriceAlert,
-  getPricesBySymbols,
-  PriceStatItem,
-} from './src/utils/database';
 import Toast from 'react-native-toast-message';
+import RootNavigator from './app/navigation/RootNavigator';
+import { findTriggeredPriceAlerts } from './src/domain/priceAlerts';
+import { refreshDataIfNeeded, syncPrices } from './src/api/nepseScraper';
+import {
+  deactivatePriceAlert,
+  getActivePriceAlerts,
+  getPricesBySymbols,
+  initDatabaseSchema,
+  initializeDatabaseSync,
+} from './src/utils/database';
 
-const PRICE_ALERT_BACKGROUND_FETCH_TASK = 'price-alert-background-fetch';
+const PRICE_ALERT_BACKGROUND_TASK = 'lagani-price-alerts';
 
-TaskManager.defineTask(PRICE_ALERT_BACKGROUND_FETCH_TASK, async () => {
-  const now = new Date();
-  console.log(`[${PRICE_ALERT_BACKGROUND_FETCH_TASK}] Task running at: ${now.toLocaleTimeString()}`);
+initializeDatabaseSync();
 
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+    shouldShowBanner: true,
+    shouldShowList: true,
+  }),
+});
+
+const checkPriceAlerts = async (): Promise<number> => {
+  await initDatabaseSchema();
+  await syncPrices();
+  const alerts = await getActivePriceAlerts();
+  if (alerts.length === 0) return 0;
+
+  const prices = await getPricesBySymbols(alerts.map((alert) => alert.symbol));
+  const triggered = findTriggeredPriceAlerts(alerts, prices);
+
+  for (const { alert, currentPrice } of triggered) {
+    if (alert.id === undefined) continue;
+    await Notifications.scheduleNotificationAsync({
+      content: {
+        title: `${alert.symbol} price alert`,
+        body: `${alert.symbol} is at Rs. ${currentPrice.toFixed(2)} (${alert.condition.toLowerCase()} Rs. ${alert.targetPrice.toFixed(2)}).`,
+        sound: 'default',
+        data: { symbol: alert.symbol },
+      },
+      trigger: null,
+    });
+    await deactivatePriceAlert(alert.id);
+  }
+  return triggered.length;
+};
+
+TaskManager.defineTask(PRICE_ALERT_BACKGROUND_TASK, async () => {
   try {
-    const activeAlerts = await getActivePriceAlerts();
-    if (activeAlerts.length === 0) {
-      console.log(`[${PRICE_ALERT_BACKGROUND_FETCH_TASK}] No active alerts found.`);
-      return BackgroundFetch.BackgroundFetchResult.NoData;
-    }
-
-    console.log(`[${PRICE_ALERT_BACKGROUND_FETCH_TASK}] Found ${activeAlerts.length} active alerts.`);
-    const symbols = [...new Set(activeAlerts.map(alert => alert.symbol))];
-    const currentPrices = await getPricesBySymbols(symbols);
-
-    let notificationsSent = 0;
-    for (const alert of activeAlerts) {
-      const priceData = currentPrices[alert.symbol];
-      if (!priceData || priceData.lastTradedPrice == null) {
-        console.log(`[${PRICE_ALERT_BACKGROUND_FETCH_TASK}] No current price found for ${alert.symbol}, skipping alert ID ${alert.id}.`);
-        continue;
-      }
-
-      const currentPrice = priceData.lastTradedPrice;
-      let trigger = false;
-
-      if (alert.condition === 'ABOVE' && currentPrice >= alert.targetPrice) {
-        trigger = true;
-      } else if (alert.condition === 'BELOW' && currentPrice <= alert.targetPrice) {
-        trigger = true;
-      }
-
-      if (trigger && alert.id) {
-        console.log(`[${PRICE_ALERT_BACKGROUND_FETCH_TASK}] Triggering alert for ${alert.symbol}! Current: ${currentPrice}, Target: ${alert.condition} ${alert.targetPrice}`);
-        
-        await Notifications.scheduleNotificationAsync({
-          content: {
-            title: `🚨 Price Alert: ${alert.symbol} 🚨`,
-            body: `${alert.symbol} reached ${currentPrice.toFixed(2)}, meeting your alert (${alert.condition.toLowerCase()} ${alert.targetPrice.toFixed(2)}).`,
-            sound: 'default',
-            data: { symbol: alert.symbol },
-          },
-          trigger: null,
-        });
-        notificationsSent++;
-
-        await deactivatePriceAlert(alert.id);
-        console.log(`[${PRICE_ALERT_BACKGROUND_FETCH_TASK}] Deactivated alert ID ${alert.id}.`);
-      }
-    }
-
-    if (notificationsSent > 0) {
-      console.log(`[${PRICE_ALERT_BACKGROUND_FETCH_TASK}] Task finished, ${notificationsSent} notifications sent.`);
-      return BackgroundFetch.BackgroundFetchResult.NewData;
-    } else {
-      console.log(`[${PRICE_ALERT_BACKGROUND_FETCH_TASK}] Task finished, no alerts triggered.`);
-      return BackgroundFetch.BackgroundFetchResult.NoData;
-    }
-
+    await checkPriceAlerts();
+    return BackgroundTask.BackgroundTaskResult.Success;
   } catch (error) {
-    console.error(`[${PRICE_ALERT_BACKGROUND_FETCH_TASK}] Error running background task:`, error);
-    return BackgroundFetch.BackgroundFetchResult.Failed;
+    console.error('[PriceAlerts] Background check failed:', error);
+    return BackgroundTask.BackgroundTaskResult.Failed;
   }
 });
 
-async function registerBackgroundFetchAsync() {
-  console.log('[App] Registering background fetch task...');
-  try {
-    const isRegistered = await TaskManager.isTaskRegisteredAsync(PRICE_ALERT_BACKGROUND_FETCH_TASK);
-    if (isRegistered) {
-        console.log('[App] Background fetch task already registered.');
-    }
-
-    await BackgroundFetch.registerTaskAsync(PRICE_ALERT_BACKGROUND_FETCH_TASK, {
-      minimumInterval: 15 * 60,
-      stopOnTerminate: false,
-      startOnBoot: true,
-    });
-    console.log('[App] Background fetch task registration attempt complete (check logs for success/failure). Status of registration check:', await TaskManager.isTaskRegisteredAsync(PRICE_ALERT_BACKGROUND_FETCH_TASK));
-
-  } catch (err) {
-    console.error('[App] Error registering background fetch task:', err);
+const registerPriceAlertTask = async (): Promise<void> => {
+  if (Platform.OS === 'web') return;
+  const status = await BackgroundTask.getStatusAsync();
+  if (status !== BackgroundTask.BackgroundTaskStatus.Available) {
+    console.warn('[PriceAlerts] OS background tasks are unavailable.');
+    return;
   }
-}
-
-// Ignore specific warnings
-LogBox.ignoreLogs([
-  'Non-serializable values were found in the navigation state',
-]);
-
-// Initialize DB connection synchronously
-console.log("[App] Initializing database connection synchronously...");
-try {
-  initializeDatabaseSync();
-  console.log("[App] Synchronous database connection established.");
-} catch (error) {
-  console.error("[App] CRITICAL: Failed synchronous database initialization:", error);
-}
+  if (await TaskManager.isTaskRegisteredAsync(PRICE_ALERT_BACKGROUND_TASK)) return;
+  await BackgroundTask.registerTaskAsync(PRICE_ALERT_BACKGROUND_TASK, {
+    minimumInterval: 15,
+  });
+};
 
 export default function App() {
-  const { colorScheme, toggleColorScheme } = useColorScheme();
-  
-  // Initialize DB SCHEMA asynchronously & Register Background Task
-  useEffect(() => {
-    const initializeApp = async () => {
+  const [initializationError, setInitializationError] = useState<string | null>(null);
+  const [isReady, setIsReady] = useState(false);
+
+  const initializeApp = useCallback(async () => {
+    setInitializationError(null);
+    setIsReady(false);
+    try {
+      await initDatabaseSchema();
       try {
-        console.log("[App] useEffect: Initializing database schema...");
-        await initDatabaseSchema();
-        console.log("[App] Database schema initialized/verified.");
-
-        await registerBackgroundFetchAsync();
-
-      } catch (error: any) {
-        console.error("[App] Error during async app initialization:", error);
+        await refreshDataIfNeeded();
+      } catch (error) {
+        // Cached data remains usable when the API is temporarily unreachable.
+        console.warn('[App] Initial market refresh failed:', error);
       }
-    };
-
-    initializeApp();
-
+      try {
+        await registerPriceAlertTask();
+      } catch (error) {
+        console.warn('[App] Price-alert task registration failed:', error);
+      }
+      setIsReady(true);
+    } catch (error) {
+      setInitializationError(error instanceof Error ? error.message : 'The local database could not be initialized.');
+    }
   }, []);
+
+  useEffect(() => {
+    void initializeApp();
+  }, [initializeApp]);
 
   return (
     <SafeAreaProvider>
       <StatusBar style="auto" />
-      <RootNavigator />
+      {isReady ? (
+        <RootNavigator />
+      ) : (
+        <View className="flex-1 items-center justify-center bg-white px-8">
+          {initializationError ? (
+            <>
+              <Text className="mb-2 text-center text-xl font-semibold text-zinc-900">Lagani could not start</Text>
+              <Text className="mb-6 text-center text-zinc-600">{initializationError}</Text>
+              <Pressable
+                accessibilityRole="button"
+                className="rounded-xl bg-purple-700 px-6 py-3"
+                onPress={() => void initializeApp()}
+              >
+                <Text className="font-semibold text-white">Try again</Text>
+              </Pressable>
+            </>
+          ) : (
+            <>
+              <ActivityIndicator size="large" color="#6d28d9" />
+              <Text className="mt-4 text-zinc-600">Preparing Lagani…</Text>
+            </>
+          )}
+        </View>
+      )}
       <Toast />
     </SafeAreaProvider>
   );

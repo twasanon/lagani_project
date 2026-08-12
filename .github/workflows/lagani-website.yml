@@ -1,0 +1,73 @@
+name: Lagani website
+
+on:
+  push:
+    paths:
+      - "lagani_website/**"
+      - ".github/workflows/lagani-website.yml"
+  pull_request:
+    paths:
+      - "lagani_website/**"
+      - ".github/workflows/lagani-website.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: lagani_website
+    env:
+      NEXT_PUBLIC_SITE_URL: https://lagani.example
+      NEXT_PUBLIC_APP_STORE_URL: https://apps.apple.com/app/id0000000000
+      NEXT_PUBLIC_PLAY_STORE_URL: https://play.google.com/store/apps/details?id=com.lagani.app
+      NEXT_PUBLIC_SUPPORT_EMAIL: support@lagani.example
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: lagani_website/package-lock.json
+      - run: npm ci
+      - run: npm run verify
+      - run: npm audit --omit=dev
+
+  container:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: lagani_website
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build production image
+        run: |
+          docker build \
+            --build-arg NEXT_PUBLIC_SITE_URL=https://lagani.example \
+            --tag lagani-website:test .
+      - name: Smoke-test production image
+        run: |
+          set -euo pipefail
+          docker run --detach --name lagani-website-ci \
+            --publish 13000:3000 \
+            lagani-website:test
+          cleanup() {
+            docker logs lagani-website-ci || true
+            docker rm --force lagani-website-ci || true
+          }
+          trap cleanup EXIT
+          ready=0
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:13000/ >/dev/null; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          test "$ready" = 1
+          curl --fail --silent http://127.0.0.1:13000/privacy >/dev/null
+          curl --fail --silent http://127.0.0.1:13000/terms >/dev/null
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            http://127.0.0.1:13000/missing)" = 404

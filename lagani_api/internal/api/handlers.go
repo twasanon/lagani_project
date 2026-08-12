@@ -1,10 +1,12 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"net/http"
 	"strconv"
+	"time"
 
 	"lagani_api/internal/database"
 	"lagani_api/internal/scheduler"
@@ -62,22 +64,39 @@ func respondWithError(w http.ResponseWriter, code int, message string) {
 
 // respondWithJSON sends a JSON response.
 func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
-	response, err := json.Marshal(payload)
-	if err != nil {
-		log.Printf("[ERROR] Failed to marshal JSON response: %v", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(`{"error": "Internal Server Error"}`))
-		return
-	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	w.Write(response)
+	if err := json.NewEncoder(w).Encode(payload); err != nil {
+		log.Printf("[ERROR] Failed to encode JSON response: %v", err)
+	}
 }
 
 // --- API Handlers ---
 
+func (h *Handlers) GetHealth(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	respondWithJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (h *Handlers) GetReadiness(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	if h.PriceRepo == nil || h.PriceRepo.DB == nil {
+		respondWithError(w, http.StatusServiceUnavailable, "Database is not available")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	if err := h.PriceRepo.DB.PingContext(ctx); err != nil {
+		log.Printf("[ERROR] Readiness database ping failed: %v", err)
+		respondWithError(w, http.StatusServiceUnavailable, "Database is not ready")
+		return
+	}
+	respondWithJSON(w, http.StatusOK, map[string]string{"status": "ready"})
+}
+
 // GetCompanies handles requests for /companies.
 func (h *Handlers) GetCompanies(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "public, max-age=300, stale-if-error=3600")
 	log.Println("API: Received request for /companies")
 	companies, err := h.CompanyRepo.GetAllCompanies()
 	if err != nil {
@@ -90,6 +109,7 @@ func (h *Handlers) GetCompanies(w http.ResponseWriter, r *http.Request) {
 
 // GetPrices handles requests for /prices.
 func (h *Handlers) GetPrices(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "public, max-age=15, stale-if-error=300")
 	log.Println("API: Received request for /prices")
 	prices, err := h.PriceRepo.GetAllLatestPrices()
 	if err != nil {
@@ -102,6 +122,7 @@ func (h *Handlers) GetPrices(w http.ResponseWriter, r *http.Request) {
 
 // GetMarketStatus handles requests for /market-status.
 func (h *Handlers) GetMarketStatus(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "public, max-age=15, stale-if-error=300")
 	log.Println("API: Received request for /market-status")
 	status, err := h.StatusRepo.GetLatestMarketStatus()
 	if err != nil {
@@ -122,6 +143,7 @@ func (h *Handlers) GetMarketStatus(w http.ResponseWriter, r *http.Request) {
 
 // GetTopGainers handles requests for /top-gainers.
 func (h *Handlers) GetTopGainers(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "public, max-age=30, stale-if-error=300")
 	log.Println("API: Received request for /top-gainers")
 	gainers, err := h.MoverRepo.GetLatestMoversByType("gainer")
 	if err != nil {
@@ -134,6 +156,7 @@ func (h *Handlers) GetTopGainers(w http.ResponseWriter, r *http.Request) {
 
 // GetTopLosers handles requests for /top-losers.
 func (h *Handlers) GetTopLosers(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "public, max-age=30, stale-if-error=300")
 	log.Println("API: Received request for /top-losers")
 	losers, err := h.MoverRepo.GetLatestMoversByType("loser")
 	if err != nil {
@@ -146,14 +169,18 @@ func (h *Handlers) GetTopLosers(w http.ResponseWriter, r *http.Request) {
 
 // GetNews handles requests for /news.
 func (h *Handlers) GetNews(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "public, max-age=120, stale-if-error=3600")
 	log.Println("API: Received request for /news")
 	// Optional: Add query parameter for limit?
 	limitStr := r.URL.Query().Get("limit")
 	limit := 50 // Default limit
 	if limitStr != "" {
-		if parsedLimit, err := strconv.Atoi(limitStr); err == nil && parsedLimit > 0 {
-			limit = parsedLimit
+		parsedLimit, err := strconv.Atoi(limitStr)
+		if err != nil || parsedLimit < 1 || parsedLimit > 100 {
+			respondWithError(w, http.StatusBadRequest, "limit must be an integer between 1 and 100")
+			return
 		}
+		limit = parsedLimit
 	}
 
 	newsItems, err := h.NewsRepo.GetRecentNewsItems(limit)
@@ -168,9 +195,10 @@ func (h *Handlers) GetNews(w http.ResponseWriter, r *http.Request) {
 // GetHistoricalPriceData handles requests for /historical-price/{securityId}
 // Now fetches data from the HistoricalPriceRepository.
 func (h *Handlers) GetHistoricalPriceData(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "public, max-age=900, stale-if-error=86400")
 	securityIDStr := chi.URLParam(r, "securityId")
 	securityID, err := strconv.Atoi(securityIDStr)
-	if err != nil {
+	if err != nil || securityID <= 0 {
 		log.Printf("[ERROR] API /historical-price: Invalid security ID format '%s': %v", securityIDStr, err)
 		respondWithError(w, http.StatusBadRequest, "Invalid security ID format")
 		return
@@ -217,8 +245,10 @@ func (h *Handlers) TriggerHistoricalDataUpdate(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// Run the job in a separate goroutine to avoid blocking the request
-	go h.Scheduler.RunHistoricalDataJobNow()
+	if !h.Scheduler.RunHistoricalDataJobNow() {
+		respondWithError(w, http.StatusConflict, "Historical data update is already running")
+		return
+	}
 
 	// Respond immediately
 	respondWithJSON(w, http.StatusAccepted, map[string]string{"message": "Historical data update triggered successfully. Check server logs for progress."}) // 202 Accepted
@@ -234,7 +264,10 @@ func (h *Handlers) TriggerMerolaganiChartUpdate(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	go h.Scheduler.RunMerolaganiChartDataJobNow()
+	if !h.Scheduler.RunMerolaganiChartDataJobNow() {
+		respondWithError(w, http.StatusConflict, "Chart data update is already running")
+		return
+	}
 
 	respondWithJSON(w, http.StatusAccepted, map[string]string{"message": "Merolagani chart data update triggered successfully. Check server logs for progress."}) // 202 Accepted
 }
@@ -250,8 +283,10 @@ func (h *Handlers) TriggerPriceUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Run the job with force=true
-	go h.Scheduler.RunPriceScrapeJobNow(true)
+	if !h.Scheduler.RunPriceScrapeJobNow(true) {
+		respondWithError(w, http.StatusConflict, "Price update is already running")
+		return
+	}
 
 	respondWithJSON(w, http.StatusAccepted, map[string]string{"message": "Forced price update triggered successfully. Check server logs for progress."})
 }
@@ -266,7 +301,10 @@ func (h *Handlers) TriggerAllPrimaryJobsUpdate(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	go h.Scheduler.RunAllPrimaryJobsNow()
+	if !h.Scheduler.RunAllPrimaryJobsNow() {
+		respondWithError(w, http.StatusConflict, "Another data update is already running")
+		return
+	}
 
 	respondWithJSON(w, http.StatusAccepted, map[string]string{"message": "All primary data update jobs triggered successfully. Check server logs for progress."}) // 202 Accepted
 }

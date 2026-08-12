@@ -97,6 +97,8 @@ const AddStockModal: React.FC<AddStockModalProps> = ({ isVisible, onClose, onSto
     <TouchableOpacity
       style={styles.resultItem}
       onPress={() => handleAddStockToWatchlist(item)}
+      accessibilityRole="button"
+      accessibilityLabel={`Add ${item.symbol} to watchlist`}
     >
       <View style={styles.resultTextContainer}>
         <Text style={styles.resultSymbol}>{item.symbol}</Text>

@@ -1,9 +1,12 @@
 package api
 
 import (
+	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -12,21 +15,26 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
+var stockSymbolPattern = regexp.MustCompile(`^[A-Z0-9]{1,16}$`)
+
 // GetSymbolChartData handles requests for chart data for a specific symbol.
 func (h *Handlers) GetSymbolChartData(w http.ResponseWriter, r *http.Request) {
-	symbol := chi.URLParam(r, "symbol")
-	if symbol == "" {
-		respondWithError(w, http.StatusBadRequest, "Symbol is required")
+	w.Header().Set("Cache-Control", "public, max-age=300, stale-if-error=86400")
+	symbol := strings.ToUpper(strings.TrimSpace(chi.URLParam(r, "symbol")))
+	if !stockSymbolPattern.MatchString(symbol) {
+		respondWithError(w, http.StatusBadRequest, "Symbol must contain 1-16 letters or digits")
 		return
 	}
-	symbol = strings.ToUpper(symbol)
 
 	// Check if company exists (optional, but good for validation)
 	_, err := h.CompanyRepo.GetCompanyBySymbol(symbol) // Assumes this method exists
 	if err != nil {
-		// Handle sql.ErrNoRows specifically for a 404
-		log.Printf("[API] /charts/%s: Company not found in DB: %v", symbol, err)
-		respondWithError(w, http.StatusNotFound, fmt.Sprintf("Company with symbol %s not found", symbol))
+		if errors.Is(err, sql.ErrNoRows) {
+			respondWithError(w, http.StatusNotFound, fmt.Sprintf("Company with symbol %s not found", symbol))
+		} else {
+			log.Printf("[ERROR] /charts/%s: Failed to query company: %v", symbol, err)
+			respondWithError(w, http.StatusInternalServerError, "Failed to validate company")
+		}
 		return
 	}
 
@@ -41,12 +49,14 @@ func (h *Handlers) GetSymbolChartData(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("[API] Received request for /charts/%s?range=%s&resolution=%s", symbol, rangeParam, resolutionParam)
 
-	now := time.Now()
+	now := time.Now().UTC()
 	var startDate, endDate time.Time
 
 	switch rangeParam {
 	case "1d":
-		startDate = now.AddDate(0, 0, -7) // Keep it as last 7 calendar days for a 'trading day' view
+		// "1d" means the latest available trading candle. A 30-day lookup
+		// safely crosses weekends and extended NEPSE holiday closures.
+		startDate = now.AddDate(0, 0, -30)
 		endDate = now
 	case "1w": // Covers 7d
 		startDate = now.AddDate(0, 0, -7)
@@ -54,18 +64,26 @@ func (h *Handlers) GetSymbolChartData(w http.ResponseWriter, r *http.Request) {
 	case "1m":
 		startDate = now.AddDate(0, -1, 0)
 		endDate = now
+	case "3m":
+		startDate = now.AddDate(0, -3, 0)
+		endDate = now
+	case "6m":
+		startDate = now.AddDate(0, -6, 0)
+		endDate = now
 	case "ytd":
 		startDate = time.Date(now.Year(), 1, 1, 0, 0, 0, 0, now.Location())
 		endDate = now
 	case "1y":
 		startDate = now.AddDate(-1, 0, 0)
 		endDate = now
+	case "5y":
+		startDate = now.AddDate(-5, 0, 0)
+		endDate = now
 	case "all":
 		startDate = time.Date(2000, 1, 1, 0, 0, 0, 0, now.Location()) // A very early date
 		endDate = now
 	default:
-		log.Printf("[API] /charts/%s: Invalid range parameter '%s'. Supported ranges: 1d, 1w, 1m, ytd, 1y, all.", symbol, rangeParam)
-		respondWithError(w, http.StatusBadRequest, fmt.Sprintf("Invalid range parameter '%s'. Supported ranges: 1d, 1w, 1m, ytd, 1y, all.", rangeParam))
+		respondWithError(w, http.StatusBadRequest, fmt.Sprintf("Invalid range parameter '%s'. Supported ranges: 1d, 1w, 1m, 3m, 6m, ytd, 1y, 5y, all.", rangeParam))
 		return
 	}
 
@@ -83,14 +101,15 @@ func (h *Handlers) GetSymbolChartData(w http.ResponseWriter, r *http.Request) {
 			log.Printf("[API] /charts/%s: No resolution provided. Range '%s' (> 2 years), defaulting to Monthly ('M').", symbol, rangeParam)
 		}
 	} else {
-		// If resolution *is* provided, validate it or default.
+		// If resolution is provided, reject mistakes rather than silently
+		// returning a different data shape than the client requested.
 		switch resolutionParam {
 		case "D", "W", "M":
 			// Valid, do nothing
 			log.Printf("[API] /charts/%s: Client provided resolution '%s'.", symbol, resolutionParam)
 		default:
-			log.Printf("[API] /charts/%s: Client provided invalid resolution '%s'. Defaulting to Daily ('D').", symbol, resolutionParam)
-			resolutionParam = "D"
+			respondWithError(w, http.StatusBadRequest, "resolution must be one of D, W, or M")
+			return
 		}
 	}
 
@@ -103,14 +122,22 @@ func (h *Handlers) GetSymbolChartData(w http.ResponseWriter, r *http.Request) {
 
 	var finalChartData []models.ChartDataPoint
 	var fetchErr error
+	queryStartDate := startDate
+	if resolutionParam == "W" {
+		// NEPSE trades Sunday-Thursday; align weekly cache lookups to Sunday.
+		offset := int(queryStartDate.Weekday())
+		queryStartDate = queryStartDate.AddDate(0, 0, -offset).Truncate(24 * time.Hour)
+	} else if resolutionParam == "M" {
+		queryStartDate = time.Date(queryStartDate.Year(), queryStartDate.Month(), 1, 0, 0, 0, 0, time.UTC)
+	}
 
 	switch resolutionParam {
 	case "D":
-		finalChartData, fetchErr = h.ChartRepo.GetChartData(symbol, "merolagani", startDate.Unix(), endDate.Unix())
+		finalChartData, fetchErr = h.ChartRepo.GetChartData(symbol, "merolagani", queryStartDate.Unix(), endDate.Unix())
 	case "W":
-		finalChartData, fetchErr = h.ChartRepo.GetWeeklyChartData(symbol, "merolagani", startDate.Unix(), endDate.Unix())
+		finalChartData, fetchErr = h.ChartRepo.GetWeeklyChartData(symbol, "merolagani", queryStartDate.Unix(), endDate.Unix())
 	case "M":
-		finalChartData, fetchErr = h.ChartRepo.GetMonthlyChartData(symbol, "merolagani", startDate.Unix(), endDate.Unix())
+		finalChartData, fetchErr = h.ChartRepo.GetMonthlyChartData(symbol, "merolagani", queryStartDate.Unix(), endDate.Unix())
 	}
 
 	if fetchErr != nil {
@@ -118,11 +145,16 @@ func (h *Handlers) GetSymbolChartData(w http.ResponseWriter, r *http.Request) {
 		respondWithError(w, http.StatusInternalServerError, "Failed to retrieve chart data")
 		return
 	}
+	w.Header().Set("X-Chart-Resolution", resolutionParam)
+	w.Header().Set("X-Data-Source", "merolagani")
 
 	if len(finalChartData) == 0 {
 		log.Printf("[API] /charts/%s: No chart data found for the specified range (Res: %s).", symbol, resolutionParam)
 		respondWithJSON(w, http.StatusOK, []models.ChartDataPoint{}) // Empty array
 		return
+	}
+	if rangeParam == "1d" && len(finalChartData) > 1 {
+		finalChartData = finalChartData[len(finalChartData)-1:]
 	}
 
 	respondWithJSON(w, http.StatusOK, finalChartData)

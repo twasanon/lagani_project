@@ -3,7 +3,6 @@ import {
   Alert,
   ActivityIndicator,
   RefreshControl,
-  Platform,
   View,
   ScrollView,
   Pressable,
@@ -12,29 +11,29 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { useNavigation, useFocusEffect, RouteProp } from '@react-navigation/native';
+import { useFocusEffect, RouteProp } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RootTabParamList } from '../navigation/AppNavigator';
 import {
-  recordPaperTrade,
+  executePaperTrade,
   getPaperTradingHistory,
   OrderType,
   PaperTradingTransaction,
   PaperTradingHolding,
   getPaperPortfolioItem,
   getPaperTradingPortfolio,
-  addOrUpdatePaperPortfolioItem,
   getPriceBySymbol,
   PriceStatItem,
   getPricesBySymbols,
   getAllCompanies,
-  CompanyItem,
   resetPaperTradingData,
+  getPaperTradingBalance,
+  DEFAULT_PAPER_TRADING_BALANCE,
   recordPaperPortfolioValue,
   getPaperPortfolioHistory,
   PaperPortfolioHistoryPoint,
 } from '../../src/utils/database';
+import { syncPrices } from '../../src/api/nepseScraper';
 import Toast from 'react-native-toast-message';
 import PortfolioChart from '../components/PortfolioChart';
 import { colors } from '../../src/theme/colors';
@@ -55,9 +54,6 @@ interface PaperTradingScreenProps {
 }
 
 interface TransactionHistoryItem extends PaperTradingTransaction {}
-
-const VIRTUAL_BALANCE_KEY = '@PaperTrading:virtualBalance';
-const DEFAULT_VIRTUAL_BALANCE = 1000000;
 
 const PaperTradingScreen = ({ route, navigation }: PaperTradingScreenProps) => {
   const preselectedSymbol = route.params?.symbol ?? '';
@@ -90,13 +86,7 @@ const PaperTradingScreen = ({ route, navigation }: PaperTradingScreenProps) => {
   const loadVirtualBalance = useCallback(async () => {
     setIsLoadingBalance(true);
     try {
-      const storedBalance = await AsyncStorage.getItem(VIRTUAL_BALANCE_KEY);
-      if (storedBalance !== null) {
-        setVirtualBalance(parseFloat(storedBalance));
-      } else {
-        setVirtualBalance(DEFAULT_VIRTUAL_BALANCE);
-        await AsyncStorage.setItem(VIRTUAL_BALANCE_KEY, DEFAULT_VIRTUAL_BALANCE.toString());
-      }
+      setVirtualBalance(await getPaperTradingBalance());
     } catch (error) {
       console.error("Failed to load virtual balance:", error);
       Toast.show({
@@ -104,24 +94,11 @@ const PaperTradingScreen = ({ route, navigation }: PaperTradingScreenProps) => {
         text1: 'Balance Error',
         text2: 'Could not load virtual balance.'
       });
-      setVirtualBalance(DEFAULT_VIRTUAL_BALANCE);
+      setVirtualBalance(null);
     } finally {
       setIsLoadingBalance(false);
     }
   }, []);
-
-  const saveVirtualBalance = async (newBalance: number) => {
-    try {
-      await AsyncStorage.setItem(VIRTUAL_BALANCE_KEY, newBalance.toString());
-    } catch (error) {
-      console.error("Failed to save virtual balance:", error);
-      Toast.show({
-        type: 'error',
-        text1: 'Save Error',
-        text2: 'Could not save updated balance.'
-      });
-    }
-  };
 
   const fetchTransactionHistory = useCallback(async () => {
     setIsLoadingHistory(true);
@@ -202,30 +179,29 @@ const PaperTradingScreen = ({ route, navigation }: PaperTradingScreenProps) => {
           loadVirtualBalance(),
           fetchTransactionHistory(),
           fetchPaperPortfolio(),
-          fetchPortfolioHistoryData()
         ]);
-        setTimeout(() => {
-          console.log("[PaperTrading] Attempting to record portfolio value on focus...");
-          recordPaperPortfolioValue();
-        }, 100);
+        try {
+          await recordPaperPortfolioValue();
+        } catch (error) {
+          console.warn('[PaperTrading] Equity snapshot was not recorded:', error);
+        }
+        await fetchPortfolioHistoryData();
       };
-      loadData();
+      void loadData();
     }, [loadVirtualBalance, fetchTransactionHistory, fetchPaperPortfolio, fetchPortfolioHistoryData])
   );
 
   const onRefresh = useCallback(async () => {
     setIsRefreshing(true);
     try {
+      await syncPrices();
       await Promise.all([
         loadVirtualBalance(),
         fetchTransactionHistory(),
         fetchPaperPortfolio(),
-        fetchPortfolioHistoryData()
       ]);
-      setTimeout(() => {
-        console.log("[PaperTrading] Attempting to record portfolio value on refresh...");
-        recordPaperPortfolioValue();
-      }, 100);
+      await recordPaperPortfolioValue();
+      await fetchPortfolioHistoryData();
     } catch (error) {
       console.error("Error during refresh:", error);
       Toast.show({
@@ -279,7 +255,7 @@ const PaperTradingScreen = ({ route, navigation }: PaperTradingScreenProps) => {
     if (isSubmittingDialog || isLoadingCompanies) return;
     setIsSubmittingDialog(true);
 
-    const parsedQuantity = parseFloat(dialogQuantity);
+    const parsedQuantity = Number(dialogQuantity);
     const upperCaseSymbol = dialogSymbol.toUpperCase().trim();
 
     if (!upperCaseSymbol) {
@@ -294,8 +270,8 @@ const PaperTradingScreen = ({ route, navigation }: PaperTradingScreenProps) => {
        return;
     }
 
-    if (isNaN(parsedQuantity) || parsedQuantity <= 0) {
-      Toast.show({ type: 'error', text1: 'Invalid Input', text2: 'Please enter a valid positive quantity.' });
+    if (!Number.isSafeInteger(parsedQuantity) || parsedQuantity <= 0) {
+      Toast.show({ type: 'error', text1: 'Invalid Input', text2: 'Share quantity must be a positive whole number.' });
       setIsSubmittingDialog(false);
       return;
     }
@@ -337,7 +313,7 @@ const PaperTradingScreen = ({ route, navigation }: PaperTradingScreenProps) => {
       Toast.show({
           type: 'error',
           text1: 'Insufficient Funds',
-          text2: `Balance (₹ ${virtualBalance.toFixed(2)}) insufficient for trade (₹ ${tradeValue.toFixed(2)}).`
+          text2: `Balance (Rs. ${virtualBalance.toFixed(2)}) is insufficient for this trade (Rs. ${tradeValue.toFixed(2)}).`
       });
       setIsSubmittingDialog(false);
       return;
@@ -363,61 +339,38 @@ const PaperTradingScreen = ({ route, navigation }: PaperTradingScreenProps) => {
       }
     }
 
-    Alert.alert(
-        'Confirm Trade',
-        `Are you sure you want to ${tradeModalOrderType.toLowerCase()} ${parsedQuantity} shares of ${upperCaseSymbol} at ₹ ${marketPrice.toFixed(2)} per share (Total: ₹ ${tradeValue.toFixed(2)})?`,
-        [
-            {
-                text: 'Cancel',
-                onPress: () => {
-                     console.log('Trade cancelled by user.');
-                     setIsSubmittingDialog(false);
-                },
-                style: 'cancel',
-            },
-            {
-                text: 'Confirm',
-                onPress: async () => {
-                     try {
-                        const newBalance = tradeModalOrderType === 'BUY' ? virtualBalance! - tradeValue : virtualBalance! + tradeValue;
-                        setVirtualBalance(newBalance);
-                        await saveVirtualBalance(newBalance);
-
-                        await recordPaperTrade(upperCaseSymbol, tradeModalOrderType, parsedQuantity, marketPrice);
-
-                        await addOrUpdatePaperPortfolioItem(upperCaseSymbol, parsedQuantity, marketPrice, tradeModalOrderType);
-
-                        Toast.show({
-                            type: 'success',
-                            text1: 'Trade Successful',
-                            text2: `Successfully ${tradeModalOrderType === 'BUY' ? 'bought' : 'sold'} ${parsedQuantity} ${upperCaseSymbol} @ ₹ ${marketPrice.toFixed(2)}.`
-                        });
-                        resetDialogForm();
-                        setIsPlaceOrderDialogVisible(false);
-
-                        fetchTransactionHistory();
-                        fetchPaperPortfolio();
-                        await recordPaperPortfolioValue();
-                        await fetchPortfolioHistoryData();
-
-                    } catch (error) {
-                        console.error("Trade execution failed after confirmation:", error);
-                        loadVirtualBalance();
-
-                        Toast.show({
-                            type: 'error',
-                            text1: 'Trade Failed',
-                            text2: `An error occurred: ${error instanceof Error ? error.message : 'Unknown error'}. Please try again.`
-                        });
-                    } finally {
-                        setIsSubmittingDialog(false);
-                    }
-                },
-                style: 'default',
-            },
-        ],
-        { cancelable: false }
-    );
+    try {
+      // The form's explicit "Confirm BUY/SELL Order" action is the confirmation.
+      // A second native Alert made the web build hang because React Native does
+      // not implement Alert callbacks there.
+      const result = await executePaperTrade(
+        upperCaseSymbol,
+        tradeModalOrderType,
+        parsedQuantity,
+        marketPrice,
+      );
+      setVirtualBalance(result.balance);
+      Toast.show({
+        type: 'success',
+        text1: 'Trade Successful',
+        text2: `Successfully ${tradeModalOrderType === 'BUY' ? 'bought' : 'sold'} ${parsedQuantity} ${upperCaseSymbol} at Rs. ${marketPrice.toFixed(2)}.`,
+      });
+      resetDialogForm();
+      setIsPlaceOrderDialogVisible(false);
+      await Promise.all([fetchTransactionHistory(), fetchPaperPortfolio()]);
+      await recordPaperPortfolioValue();
+      await fetchPortfolioHistoryData();
+    } catch (error) {
+      console.error("Trade execution failed:", error);
+      await loadVirtualBalance();
+      Toast.show({
+        type: 'error',
+        text1: 'Trade Failed',
+        text2: `An error occurred: ${error instanceof Error ? error.message : 'Unknown error'}. Please try again.`,
+      });
+    } finally {
+      setIsSubmittingDialog(false);
+    }
   };
 
   const resetDialogForm = () => {
@@ -469,8 +422,7 @@ const PaperTradingScreen = ({ route, navigation }: PaperTradingScreenProps) => {
             console.log('User confirmed paper trading reset.');
             try {
               await resetPaperTradingData();
-              setVirtualBalance(DEFAULT_VIRTUAL_BALANCE);
-              await AsyncStorage.setItem(VIRTUAL_BALANCE_KEY, DEFAULT_VIRTUAL_BALANCE.toString());
+              setVirtualBalance(DEFAULT_PAPER_TRADING_BALANCE);
               await fetchTransactionHistory();
               await fetchPaperPortfolio();
               await fetchPortfolioHistoryData();
@@ -510,10 +462,23 @@ const PaperTradingScreen = ({ route, navigation }: PaperTradingScreenProps) => {
     }
   }, [portfolioHistory]);
 
-  const adaptedHistoryData = useMemo(() => portfolioHistory.map(point => ({
+  const filteredPortfolioHistory = useMemo(() => {
+    if (timeRange === 'All' || portfolioHistory.length === 0) return portfolioHistory;
+    const durations: Record<string, number> = {
+      '1d': 24 * 60 * 60 * 1000,
+      '1w': 7 * 24 * 60 * 60 * 1000,
+      '1m': 30 * 24 * 60 * 60 * 1000,
+      '3m': 90 * 24 * 60 * 60 * 1000,
+      '1y': 365 * 24 * 60 * 60 * 1000,
+    };
+    const cutoff = Date.now() - (durations[timeRange] ?? durations['1d']);
+    return portfolioHistory.filter((point) => new Date(point.timestamp).getTime() >= cutoff);
+  }, [portfolioHistory, timeRange]);
+
+  const adaptedHistoryData = useMemo(() => filteredPortfolioHistory.map(point => ({
     time: point.timestamp,
     value: point.totalValue,
-  })), [portfolioHistory]);
+  })), [filteredPortfolioHistory]);
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
@@ -525,30 +490,33 @@ const PaperTradingScreen = ({ route, navigation }: PaperTradingScreenProps) => {
             <RefreshControl refreshing={isRefreshing} onRefresh={onRefresh} tintColor={colors.primary} />
         }
       >
-        {/* TEMPORARY: Testing solid background instead of gradient */}
         <Card className="w-full mt-4 mb-4 bg-purple-200 text-black rounded-3xl overflow-hidden border-0 shadow-sm">
           <CardContent className="p-6">
-            <View className="flex flex-row justify-between items-start">
-              <View>
-                <Text className="text-zinc-600 text-lg font-medium">Virtual Balance</Text>
-                {isLoadingBalance ? (
-                    <ActivityIndicator size="large" color={colors.primary} className="mt-2"/>
-                 ) : (
-                    <Text className="text-4xl font-bold mt-1 text-zinc-900">
-                       ₹ {virtualBalance?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) ?? '...'}
-                    </Text>
-                 )}
-              </View>
+            <View className="flex flex-row justify-between items-center">
+              <Text className="text-zinc-600 text-lg font-medium">Virtual Balance</Text>
               <Button
                 variant="outline"
                 size="sm"
                 className="flex-row rounded-full border-zinc-300 bg-white/50 h-10 w-auto px-4 active:bg-white/70"
                 onPress={handleResetPaperTrading}
+                accessibilityLabel="Reset paper trading account"
               >
                 <Ionicons name="refresh-outline" size={16} color={colors.textSecondary} className="mr-1" />
                 <Text className="text-sm font-medium text-zinc-700">Reset</Text>
               </Button>
             </View>
+            {isLoadingBalance ? (
+              <ActivityIndicator size="large" color={colors.primary} className="mt-2"/>
+            ) : (
+              <Text
+                className="text-3xl font-bold mt-2 text-zinc-900"
+                numberOfLines={1}
+                adjustsFontSizeToFit
+                minimumFontScale={0.7}
+              >
+                Rs. {virtualBalance?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) ?? '...'}
+              </Text>
+            )}
           </CardContent>
         </Card>
 
@@ -570,8 +538,13 @@ const PaperTradingScreen = ({ route, navigation }: PaperTradingScreenProps) => {
              ) : (
                 <>
                    <View className="flex flex-row justify-between items-center">
-                       <Text className="text-4xl font-bold text-zinc-900">
-                         ₹ {portfolioSummary.currentValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                       <Text
+                         className="flex-1 mr-2 text-3xl font-bold text-zinc-900"
+                         numberOfLines={1}
+                         adjustsFontSizeToFit
+                         minimumFontScale={0.75}
+                       >
+                         Rs. {portfolioSummary.currentValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                        </Text>
                        <View className={`flex flex-row items-center ${totalPL >= 0 ? 'text-green-500' : 'text-red-500'}`}>
                          <Ionicons name={totalPL >= 0 ? "arrow-up" : "arrow-down"} size={16} color={totalPL >= 0 ? colors.positive : colors.negative} className="mr-1" />
@@ -582,11 +555,11 @@ const PaperTradingScreen = ({ route, navigation }: PaperTradingScreenProps) => {
                    <View className="flex-row justify-between mt-6">
                       <View className="flex-1 items-center px-1">
                          <Text className="text-zinc-500 text-sm mb-1">Invested</Text>
-                         <Text className="font-medium text-zinc-900 text-center">₹ {portfolioSummary.totalInvested.toFixed(2)}</Text>
+                         <Text className="text-sm font-medium text-zinc-900 text-center">Rs. {portfolioSummary.totalInvested.toFixed(2)}</Text>
                       </View>
                       <View className="flex-1 items-center px-1 border-l border-r border-zinc-200">
                          <Text className="text-zinc-500 text-sm mb-1">Current</Text>
-                         <Text className="font-medium text-zinc-900 text-center">₹ {portfolioSummary.currentValue.toFixed(2)}</Text>
+                         <Text className="text-sm font-medium text-zinc-900 text-center">Rs. {portfolioSummary.currentValue.toFixed(2)}</Text>
                       </View>
                       <View className="flex-1 items-center px-1">
                          <Text className="text-zinc-500 text-sm mb-1">Total P/L</Text>
@@ -605,8 +578,8 @@ const PaperTradingScreen = ({ route, navigation }: PaperTradingScreenProps) => {
              <View className="px-1 mb-2">
                   <Text className="text-2xl font-bold text-zinc-900">
                        {selectedChartValue !== null
-                          ? `₹ ${selectedChartValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-                          : isLoadingHistoryChart ? 'Loading...' : `₹ ${portfolioSummary.currentValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) ?? '0.00'}`
+                          ? `Rs. ${selectedChartValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                          : isLoadingHistoryChart ? 'Loading...' : `Rs. ${((virtualBalance ?? 0) + portfolioSummary.currentValue).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
                       }
                   </Text>
                   <Text className="text-sm text-zinc-500">
@@ -739,7 +712,7 @@ const PaperTradingScreen = ({ route, navigation }: PaperTradingScreenProps) => {
                                    </View>
                                    <View className="text-right">
                                       <Text className="font-medium text-base text-zinc-900">
-                                          ₹ {currentValue != null ? currentValue.toFixed(2) : '--'}
+                                          Rs. {currentValue != null ? currentValue.toFixed(2) : '--'}
                                       </Text>
                                       <Text className={`text-sm font-medium text-right ${valueColorClass}`}>
                                           {profitLossPercent !== null ? `${profitLossPercent >= 0 ? '+' : ''}${profitLossPercent.toFixed(1)}%` : '--'}
@@ -779,7 +752,7 @@ const PaperTradingScreen = ({ route, navigation }: PaperTradingScreenProps) => {
                                     </View>
                                 </View>
                                 <View className="text-right">
-                                   <Text className="font-medium text-base text-zinc-900">₹ {item.executedPrice.toFixed(2)}</Text>
+                                   <Text className="font-medium text-base text-zinc-900">Rs. {item.executedPrice.toFixed(2)}</Text>
                                    <Text className="text-sm text-zinc-500">{new Date(item.timestamp).toLocaleDateString()}</Text>
                                 </View>
                             </CardContent>
@@ -796,6 +769,7 @@ const PaperTradingScreen = ({ route, navigation }: PaperTradingScreenProps) => {
          size="icon"
          className="absolute bottom-5 right-5 h-14 w-14 rounded-full bg-primary shadow-lg"
          onPress={() => openPlaceOrderDialog('BUY')}
+         accessibilityLabel="Place paper trade"
        >
          <Ionicons name="add" size={28} className="text-primary-foreground" />
        </Button>
@@ -823,6 +797,8 @@ const PaperTradingScreen = ({ route, navigation }: PaperTradingScreenProps) => {
                       resetDialogForm();
                   }}
                   disabled={isSubmittingDialog}
+                  accessibilityRole="button"
+                  accessibilityLabel="Close trade dialog"
                 >
                   <Ionicons name="close" size={20} color={colors.textSecondary} />
                 </Pressable>
@@ -908,13 +884,13 @@ const PaperTradingScreen = ({ route, navigation }: PaperTradingScreenProps) => {
                          <View className="flex-row justify-between">
                              <Text className="text-zinc-500">Estimated Cost/Proceeds</Text>
                              <Text className="text-zinc-900 font-medium">
-                                 ₹ {estimatedTotalValue !== null ? estimatedTotalValue.toFixed(2) : '--'}
+                                 Rs. {estimatedTotalValue !== null ? estimatedTotalValue.toFixed(2) : '--'}
                             </Text>
                          </View>
                          <View className="flex-row justify-between">
                              <Text className="text-zinc-500">Available Balance</Text>
                              <Text className="text-zinc-900 font-medium">
-                                 ₹ {virtualBalance?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) ?? '...'}
+                                 Rs. {virtualBalance?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) ?? '...'}
                              </Text>
                          </View>
                      </View>

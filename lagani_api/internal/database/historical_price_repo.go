@@ -3,7 +3,8 @@ package database
 import (
 	"database/sql"
 	"fmt"
-	"log"
+	"strings"
+	"time"
 
 	// Needed for time.Now() if we were setting a scraped_at timestamp
 	"lagani_api/internal/models"
@@ -32,13 +33,24 @@ func (r *HistoricalPriceRepository) SaveHistoricalPrices(securityID int, prices 
 	}
 	defer tx.Rollback() // Rollback if commit fails
 
-	// Use INSERT OR IGNORE to skip rows that would violate the unique constraint.
+	// Upsert because NEPSE can revise the latest trading day's values after an
+	// initial intraday response has already been cached.
 	sqlStr := `
-		INSERT OR IGNORE INTO historical_prices (
+		INSERT INTO historical_prices (
 			security_id, business_date, open_price, high_price, low_price,
 			close_price, previous_day_close_price, total_traded_quantity,
-			last_traded_price, fifty_two_week_high
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			last_traded_price, fifty_two_week_high, scraped_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(security_id, business_date) DO UPDATE SET
+			open_price = excluded.open_price,
+			high_price = excluded.high_price,
+			low_price = excluded.low_price,
+			close_price = excluded.close_price,
+			previous_day_close_price = excluded.previous_day_close_price,
+			total_traded_quantity = excluded.total_traded_quantity,
+			last_traded_price = excluded.last_traded_price,
+			fifty_two_week_high = excluded.fifty_two_week_high,
+			scraped_at = excluded.scraped_at;
 	`
 	stmt, err := tx.Prepare(sqlStr)
 	if err != nil {
@@ -46,9 +58,16 @@ func (r *HistoricalPriceRepository) SaveHistoricalPrices(securityID int, prices 
 	}
 	defer stmt.Close()
 
-	rowsAffected := 0
+	now := time.Now().UTC()
 	for _, price := range prices {
-		res, err := stmt.Exec(
+		price.BusinessDate = strings.TrimSpace(price.BusinessDate)
+		if price.BusinessDate == "" {
+			return fmt.Errorf("historical price for security ID %d has an empty business date", securityID)
+		}
+		if price.HighPrice < price.LowPrice || price.OpenPrice < 0 || price.ClosePrice < 0 || price.TotalTradedQuantity < 0 {
+			return fmt.Errorf("historical price for security ID %d on %s contains invalid OHLCV values", securityID, price.BusinessDate)
+		}
+		_, err := stmt.Exec(
 			securityID,
 			price.BusinessDate,
 			price.OpenPrice,
@@ -59,17 +78,10 @@ func (r *HistoricalPriceRepository) SaveHistoricalPrices(securityID int, prices 
 			price.TotalTradedQuantity,
 			price.LastTradedPrice,
 			price.FiftyTwoWeekHigh,
+			now,
 		)
 		if err != nil {
-			// Log the specific price data causing the error
-			log.Printf("[ERROR] Failed to execute historical price insert for ID %d, Date %s: %v", securityID, price.BusinessDate, err)
-			// Continue trying to insert others? Or fail the whole batch?
-			// For now, fail the whole batch on first error.
 			return fmt.Errorf("failed to execute historical price insert for ID %d, Date %s: %w", securityID, price.BusinessDate, err)
-		}
-		// Check how many rows were actually inserted (will be 0 if ignored)
-		if count, err := res.RowsAffected(); err == nil {
-			rowsAffected += int(count)
 		}
 	}
 
@@ -77,7 +89,6 @@ func (r *HistoricalPriceRepository) SaveHistoricalPrices(securityID int, prices 
 		return fmt.Errorf("failed to commit historical price transaction for ID %d: %w", securityID, err)
 	}
 
-	log.Printf("Historical Prices for ID %d: Processed %d data points, inserted %d new rows.", securityID, len(prices), rowsAffected)
 	return nil
 }
 
@@ -99,7 +110,7 @@ func (r *HistoricalPriceRepository) GetHistoricalPricesBySecurityID(securityID i
 	}
 	defer rows.Close()
 
-	var prices []models.HistoricalPriceData
+	prices := make([]models.HistoricalPriceData, 0)
 	for rows.Next() {
 		var p models.HistoricalPriceData
 		err := rows.Scan(
@@ -114,8 +125,7 @@ func (r *HistoricalPriceRepository) GetHistoricalPricesBySecurityID(securityID i
 			&p.FiftyTwoWeekHigh,
 		)
 		if err != nil {
-			log.Printf("[ERROR] Failed to scan historical price row for ID %d: %v", securityID, err)
-			continue // Skip problematic rows
+			return nil, fmt.Errorf("failed to scan historical price row for ID %d: %w", securityID, err)
 		}
 		prices = append(prices, p)
 	}

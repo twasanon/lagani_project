@@ -1,29 +1,30 @@
-# Lagani Project Tasks
+# Mobile follow-up backlog
 
-This file tracks the current development focus and potential future tasks for the Lagani app.
+The audited baseline is defined by [AUDIT.md](AUDIT.md). The items below are deliberate product or operational follow-ups, not silently unfinished versions of advertised features.
 
-## Current Task
+## Required before public store rollout
 
-- [ ] **Implement Stock Detail Chart (`StockDetailScreen.tsx`)**
-    - [ ] **Backend:** Ensure the `lagani_api` backend provides a stable endpoint for fetching historical price data (e.g., daily data for 1 year) for a given security ID or symbol. (Likely `/historical-price/:securityId` is available).
-    - [ ] **Frontend API Layer (`src/api/`):** Create a function to call the backend endpoint for historical data.
-    - [ ] **UI (`app/screens/StockDetailScreen.tsx`):**
-        - [ ] Integrate a suitable charting library (consider `react-native-gifted-charts` or `lightweight-charts` via WebView).
-        - [ ] Fetch historical data for the current stock symbol when the screen loads.
-        - [ ] Display the fetched data in the chart, replacing the current placeholder.
-        - [ ] Add controls for changing the time range (e.g., 1D, 1W, 1M, 1Y, All) if the library supports it easily.
-        - [ ] Handle loading and error states for the chart data.
+- [ ] Founders approve `com.lagani.app`, Expo organization, and store ownership.
+- [ ] Production HTTPS API is deployed and configured in EAS.
+- [ ] Market/news data distribution terms and attributions receive legal review.
+- [ ] Privacy policy, support URL, store declarations, screenshots, and listing copy are approved.
+- [ ] Full preview-build matrix passes on physical iOS and Android devices.
+- [ ] Background alert behavior is observed on representative OS versions and documented as best-effort.
+- [ ] Remaining Expo/Metro/RN npm advisories are reviewed against current upstream releases.
 
-## Backlog / Future Ideas
+## Product decisions
 
-- [ ] Implement real portfolio chart on `HomeScreen`.
-- [ ] Implement detailed Portfolio P/L calculation and display on `PortfolioScreen`.
-- [ ] Fetch and display real Key Stats on `StockDetailScreen`.
-- [ ] Enhance Search UI/functionality (e.g., better result presentation, history).
-- [ ] Implement user settings on `SettingsScreen` (e.g., theme preference, notification settings).
-- [ ] Add automated tests (Frontend & Backend).
-- [ ] Improve error handling and user feedback across the app.
-- [ ] Investigate and fix potential background fetch reliability issues for price alerts in standalone builds.
-- [ ] Explore options to get dates for Nepalipaisa news items (if possible).
-- [ ] Consider adding company logos or other visual enhancements.
-- [ ] Add onboarding/first-time user experience. 
+- [ ] Decide whether personal portfolios need authenticated cloud backup/sync.
+- [ ] Define a fee/tax/corporate-action model before calling the ledger tax-accurate.
+- [ ] Decide whether fractional units are needed for funds or whether whole shares remain universal.
+- [ ] Define telemetry and crash-reporting consent before adding an analytics SDK.
+- [ ] Decide whether the Expo web client will ever be public or remain a development preview.
+
+## Enhancements
+
+- [ ] Add candlestick rendering using the already supplied OHLC chart contract.
+- [ ] Add explicit stale-data timestamps throughout market screens.
+- [ ] Add integration tests around the SQLite repository on native CI infrastructure.
+- [ ] Add screenshot regression coverage for small phones and large accessibility text.
+- [ ] Add localization only after English and Nepali terminology/content ownership is defined.
+- [ ] Add onboarding for data delay, local-only storage, and paper-trading limitations.

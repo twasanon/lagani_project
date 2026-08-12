@@ -52,11 +52,8 @@ const SetPriceAlertModal: React.FC<SetPriceAlertModalProps> = ({
         return;
     }
 
-    console.log(`[SetPriceAlertModal] User wants to set alert for ${symbol}: ${condition} ${target}`);
-    // TODO: Add permission check here
-    // TODO: Call DB function here
-    onAlertSet(target, condition); // Pass data back to parent screen
-    handleClose(); // Close after setting
+    onAlertSet(target, condition);
+    handleClose();
   };
 
   const handleClose = () => {
@@ -98,7 +95,7 @@ const SetPriceAlertModal: React.FC<SetPriceAlertModalProps> = ({
 
           {/* Current Price Info */}
           <Text style={styles.currentPriceText}>
-            Current Price: {currentPrice != null ? `₹ ${currentPrice.toFixed(2)}` : 'N/A'}
+            Current Price: {currentPrice != null ? `Rs. ${currentPrice.toFixed(2)}` : 'N/A'}
           </Text>
 
           {/* Condition Selector */}
@@ -121,7 +118,7 @@ const SetPriceAlertModal: React.FC<SetPriceAlertModalProps> = ({
 
           {/* Target Price Input */}
           <View style={styles.inputGroup}>
-            <Text style={styles.label}>Target Price (₹)</Text>
+            <Text style={styles.label}>Target Price (Rs.)</Text>
             <TextInput
               style={[styles.input, priceError ? styles.inputError : null]}
               placeholder="Enter target price"
@@ -292,4 +289,4 @@ const styles = StyleSheet.create({
   },
 });
 
-export default SetPriceAlertModal; 
+export default SetPriceAlertModal;

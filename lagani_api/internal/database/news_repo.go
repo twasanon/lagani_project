@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"lagani_api/internal/models"
@@ -19,7 +20,7 @@ func NewNewsRepository(db *sql.DB) *NewsRepository {
 	return &NewsRepository{DB: db}
 }
 
-// SaveNewsItems inserts multiple news items, ignoring duplicates based on the link.
+// SaveNewsItems inserts or refreshes multiple news items, keyed by link.
 func (r *NewsRepository) SaveNewsItems(items []models.NewsItem) (int64, error) {
 	if len(items) == 0 {
 		log.Println("No news items provided to save.")
@@ -33,11 +34,17 @@ func (r *NewsRepository) SaveNewsItems(items []models.NewsItem) (int64, error) {
 	}
 	defer tx.Rollback()
 
-	// Prepare the INSERT statement with ON CONFLICT DO NOTHING
+	// Refresh mutable metadata for articles already seen. The original scraped_at
+	// is retained so duplicates cannot jump to the top of the feed.
 	stmt, err := tx.Prepare(`
-		INSERT INTO news_items (source, title, link, image_url, date_str, scraped_at)
-		VALUES (?, ?, ?, ?, ?, ?)
-		ON CONFLICT(link) DO NOTHING;
+		INSERT INTO news_items (source, title, link, image_url, date_str, published_at, scraped_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(link) DO UPDATE SET
+			source = excluded.source,
+			title = excluded.title,
+			image_url = excluded.image_url,
+			date_str = excluded.date_str,
+			published_at = COALESCE(excluded.published_at, news_items.published_at);
 	`)
 	if err != nil {
 		return 0, fmt.Errorf("failed to prepare news item insert statement: %w", err)
@@ -48,18 +55,23 @@ func (r *NewsRepository) SaveNewsItems(items []models.NewsItem) (int64, error) {
 	rowsAffected := int64(0)
 
 	for _, item := range items {
+		item.Source = strings.ToLower(strings.TrimSpace(item.Source))
+		item.Title = strings.TrimSpace(item.Title)
+		item.Link = strings.TrimSpace(item.Link)
+		if item.Source == "" || item.Title == "" || item.Link == "" {
+			return 0, fmt.Errorf("invalid news item with source=%q title=%q link=%q", item.Source, item.Title, item.Link)
+		}
 		result, err := stmt.Exec(
 			item.Source,
 			item.Title,
 			item.Link,
 			item.ImageURL,
 			item.DateStr,
+			item.PublishedAt,
 			now,
 		)
 		if err != nil {
-			// Log error but continue processing other items
-			log.Printf("Error executing insert for news item '%s': %v", item.Title, err)
-			continue // Or return error to fail the batch?
+			return 0, fmt.Errorf("failed to upsert news item %q: %w", item.Title, err)
 		}
 		count, _ := result.RowsAffected()
 		rowsAffected += count
@@ -69,7 +81,7 @@ func (r *NewsRepository) SaveNewsItems(items []models.NewsItem) (int64, error) {
 		return 0, fmt.Errorf("failed to commit news item transaction: %w", err)
 	}
 
-	log.Printf("Successfully saved %d new news items (%d duplicates ignored).", rowsAffected, int64(len(items))-rowsAffected)
+	log.Printf("Successfully upserted %d news items.", rowsAffected)
 	return rowsAffected, nil
 }
 
@@ -82,9 +94,9 @@ func (r *NewsRepository) GetRecentNewsItems(limit int) ([]models.NewsItem, error
 	}
 
 	query := `
-		SELECT id, source, title, link, image_url, date_str, scraped_at
+		SELECT id, source, title, link, image_url, date_str, published_at, scraped_at
 		FROM news_items
-		ORDER BY scraped_at DESC
+		ORDER BY COALESCE(published_at, scraped_at) DESC, id DESC
 		LIMIT ?;
 	`
 
@@ -94,15 +106,19 @@ func (r *NewsRepository) GetRecentNewsItems(limit int) ([]models.NewsItem, error
 	}
 	defer rows.Close()
 
-	var newsItems []models.NewsItem
+	newsItems := make([]models.NewsItem, 0)
 	for rows.Next() {
 		var item models.NewsItem
+		var publishedAt sql.NullTime
 		err := rows.Scan(
-			&item.ID, &item.Source, &item.Title, &item.Link, &item.ImageURL, &item.DateStr, &item.ScrapedAt,
+			&item.ID, &item.Source, &item.Title, &item.Link, &item.ImageURL, &item.DateStr, &publishedAt, &item.ScrapedAt,
 		)
 		if err != nil {
-			log.Printf("Error scanning news item row: %v", err)
-			continue
+			return nil, fmt.Errorf("failed to scan news item row: %w", err)
+		}
+		if publishedAt.Valid {
+			value := publishedAt.Time.UTC()
+			item.PublishedAt = &value
 		}
 		newsItems = append(newsItems, item)
 	}

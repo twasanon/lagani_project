@@ -1,15 +1,12 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import {
   View,
   Text,
   ScrollView,
   TouchableOpacity,
-  Image,
-  Alert,
   StyleSheet,
   ActivityIndicator,
   RefreshControl,
-  TextInput,
   FlatList,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
@@ -17,9 +14,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { HomeStackParamList } from '../navigation/HomeStackNavigator';
-import PortfolioChart from '../components/PortfolioChart';
 import AddToWatchlistModal from '../components/AddToWatchlistModal';
-import AddStockHoldingModal from '../components/AddStockHoldingModal';
 import PriceAlertsModal from '../components/PriceAlertsModal';
 import { colors } from '../../src/theme/colors';
 import { Button } from 'react-reusables/components/ui/button';
@@ -87,6 +82,8 @@ const MarketMoverItem = ({ item, index, navigation }: {
       key={`${item.symbol}-${index}`}
       className="flex-row justify-between items-center p-3 mb-2 bg-card rounded-lg shadow-sm"
       onPress={() => navigateToStockDetail(item.symbol, item.securityName)}
+      accessibilityRole="button"
+      accessibilityLabel={`View ${item.symbol} details`}
     >
       <View className="flex-row items-center flex-1 mr-2">
          <View className="w-10 h-10 rounded-lg items-center justify-center bg-border">
@@ -122,6 +119,8 @@ const WatchlistItemPreview = ({ item, index, navigation }: {
           key={item.id}
           className="flex-1 flex-row items-center p-2 bg-card rounded-lg mb-2 shadow-sm"
           onPress={() => navigateToStockDetail(item.symbol, item.name)}
+          accessibilityRole="button"
+          accessibilityLabel={`View ${item.symbol} details`}
         >
           <View className="flex-row items-center flex-1 mr-2">
              <View className="w-10 h-10 rounded-lg items-center justify-center bg-border">
@@ -133,7 +132,7 @@ const WatchlistItemPreview = ({ item, index, navigation }: {
              </View>
           </View>
           <View className="items-end ml-2 w-20">
-             <Text className="text-sm font-semibold text-text">₹ {item.lastPrice != null ? item.lastPrice.toFixed(2) : '--'}</Text>
+             <Text className="text-sm font-semibold text-text">Rs. {item.lastPrice != null ? item.lastPrice.toFixed(2) : '--'}</Text>
              <Text className={`text-xs font-medium ${changeColor}`}>
                  {item.changePercent == null ? '--%' : `${item.changePercent >= 0 ? '+' : ''}${item.changePercent.toFixed(2)}%`}
              </Text>
@@ -150,7 +149,7 @@ const HomeScreen = () => {
   const [topGainers, setTopGainers] = useState<TopListItem[]>([]);
   const [topLosers, setTopLosers] = useState<TopListItem[]>([]);
   const [watchlist, setWatchlist] = useState<WatchlistItem[]>([]);
-  const [portfolioHoldings, setPortfolioHoldings] = useState<PortfolioHolding[]>([]);
+  const [portfolioHoldingCount, setPortfolioHoldingCount] = useState(0);
   const [calculatedPortfolio, setCalculatedPortfolio] = useState<CalculatedPortfolio | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isPortfolioLoading, setIsPortfolioLoading] = useState(true);
@@ -159,7 +158,6 @@ const HomeScreen = () => {
 
   // --- State for Modals ---
   const [isAddToWatchlistModalVisible, setIsAddToWatchlistModalVisible] = useState(false);
-  const [isAddTransactionModalVisible, setIsAddTransactionModalVisible] = useState(false);
   const [isPriceAlertsModalVisible, setIsPriceAlertsModalVisible] = useState(false);
 
   // --- State for Search ---
@@ -168,19 +166,16 @@ const HomeScreen = () => {
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [isSearchLoading, setIsSearchLoading] = useState(false);
   // Add state for debounce timer
-  const [debounceTimer, setDebounceTimer] = useState<NodeJS.Timeout | null>(null);
+  const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // --- Chart State (using mock data for now) ---
-  const [selectedTimeframe, setSelectedTimeframe] = useState('1D');
-  const [chartData, setChartData] = useState<Array<{ time: string; value: number }>>([]);
-  const [selectedChartValue, setSelectedChartValue] = useState(1000);
-  const [selectedDate, setSelectedDate] = useState('');
-  const timeframes = ['1D', '1W', '1M', '3M', '1Y', 'All'];
+  useEffect(() => () => {
+    if (debounceTimer.current) clearTimeout(debounceTimer.current);
+  }, []);
 
   // --- Portfolio Calculation Logic ---
   const calculatePortfolio = (holdings: PortfolioHolding[], prices: Record<string, PriceStatItem>): CalculatedPortfolio | null => {
       if (!holdings || holdings.length === 0) {
-          return { value: 0, cost: 0, profitLoss: 0, profitLossPercentage: 0, isPositive: true, overallPLString: '', overallPLPercentString: '' };
+          return { value: 0, cost: 0, profitLoss: 0, profitLossPercentage: 0, isPositive: true, overallPLString: '0.00', overallPLPercentString: '0.00%' };
       }
 
       let totalValue = 0;
@@ -218,8 +213,7 @@ const HomeScreen = () => {
       let calculated: CalculatedPortfolio | null = null;
       try {
           const holdings = await getPortfolioHoldings();
-          setPortfolioHoldings(holdings);
-
+          setPortfolioHoldingCount(holdings.length);
           if (holdings.length > 0) {
               const symbols = holdings.map(h => h.symbol);
               const prices = await getPricesBySymbols(symbols);
@@ -249,7 +243,7 @@ const HomeScreen = () => {
     console.log("[HomeScreen] Loading main data...");
     let portfolioSummary: CalculatedPortfolio | null = null;
     try {
-      await refreshDataIfNeeded();
+      await refreshDataIfNeeded(refreshing);
 
       const [status, gainers, losers, watch] = await Promise.all([
         getMarketStatus(),
@@ -282,152 +276,15 @@ const HomeScreen = () => {
   useFocusEffect(
     useCallback(() => {
       console.log("[HomeScreen] Screen focused, loading data...");
-      let isMounted = true;
-      const focusLoad = async () => {
-          const summary = await loadData();
-          if (isMounted && summary) {
-              const baseValue = summary.value > 0 ? summary.value : 1000;
-              const initialChartData = generateChartData(selectedTimeframe, baseValue);
-              setChartData(initialChartData);
-              if (initialChartData.length > 0) {
-                  setSelectedChartValue(initialChartData[initialChartData.length - 1].value);
-                  setSelectedDate(initialChartData[initialChartData.length - 1].time);
-              }
-          }
-          else if (isMounted) {
-              const initialChartData = generateChartData(selectedTimeframe, 1000);
-              setChartData(initialChartData);
-              if (initialChartData.length > 0) {
-                  setSelectedChartValue(initialChartData[initialChartData.length - 1].value);
-                  setSelectedDate(initialChartData[initialChartData.length - 1].time);
-              }
-          }
-      };
-      focusLoad();
-      return () => { isMounted = false; };
-    }, [loadData, selectedTimeframe])
+      void loadData();
+    }, [loadData])
   );
 
   const onRefresh = useCallback(() => {
       console.log("[HomeScreen] Pull-to-refresh triggered");
       setIsRefreshing(true);
-      const refreshLoad = async () => {
-          const summary = await loadData(true);
-          if (summary) {
-              const baseValue = summary.value > 0 ? summary.value : 1000;
-              const refreshedChartData = generateChartData(selectedTimeframe, baseValue);
-              setChartData(refreshedChartData);
-              if (refreshedChartData.length > 0) {
-                  setSelectedChartValue(refreshedChartData[refreshedChartData.length - 1].value);
-                  setSelectedDate(refreshedChartData[refreshedChartData.length - 1].time);
-              }
-          }
-          else {
-              const refreshedChartData = generateChartData(selectedTimeframe, 1000);
-              setChartData(refreshedChartData);
-              if (refreshedChartData.length > 0) {
-                  setSelectedChartValue(refreshedChartData[refreshedChartData.length - 1].value);
-                  setSelectedDate(refreshedChartData[refreshedChartData.length - 1].time);
-              }
-          }
-      };
-      refreshLoad();
-  }, [loadData, selectedTimeframe]);
-
-  // --- Chart Generation & Handling (Scales Mock Data) ---
-  function generateChartData(timeframe: string, baseValue: number = 1000) {
-    console.log(`[HomeScreen] Generating chart data for ${timeframe} with base value ${baseValue}`);
-    const now = new Date();
-    const data = [];
-    switch (timeframe) {
-      case '1D':
-        const startHour = 10; const endHour = 15;
-        for (let hour = startHour; hour <= endHour; hour++) {
-          for (let minute = 0; minute < 60; minute += 15) {
-            const date = new Date(now); date.setHours(hour, minute, 0, 0);
-            const progress = (hour - startHour + minute / 60) / (endHour - startHour);
-            const trend = Math.sin(progress * Math.PI) * (baseValue * 0.05);
-            const noise = (Math.random() - 0.5) * (baseValue * 0.02);
-            const value = baseValue + trend + noise;
-            data.push({ time: date.toISOString(), value: parseFloat(value.toFixed(2)) });
-          }
-        } break;
-      case '1W':
-        for (let i = 6; i >= 0; i--) {
-          const date = new Date(now); date.setDate(date.getDate() - i);
-          const progress = (6 - i) / 6;
-          const trend = Math.sin(progress * Math.PI) * (baseValue * 0.03);
-          const noise = (Math.random() - 0.5) * (baseValue * 0.015);
-          const value = baseValue + trend + noise;
-          data.push({ time: date.toISOString().split('T')[0], value: parseFloat(value.toFixed(2)) });
-        } break;
-      case '1M':
-        for (let i = 29; i >= 0; i--) {
-          const date = new Date(now); date.setDate(date.getDate() - i);
-          const progress = (29 - i) / 29;
-          const trend = Math.sin(progress * Math.PI * 1.5) * (baseValue * 0.04);
-          const noise = (Math.random() - 0.5) * (baseValue * 0.02);
-          const value = baseValue + trend + noise;
-          data.push({ time: date.toISOString().split('T')[0], value: parseFloat(value.toFixed(2)) });
-        } break;
-      case '3M':
-        for (let i = 89; i >= 0; i--) {
-          const date = new Date(now); date.setDate(date.getDate() - i);
-          const progress = (89 - i) / 89;
-          const trend = Math.sin(progress * Math.PI * 2) * (baseValue * 0.05);
-          const noise = (Math.random() - 0.5) * (baseValue * 0.025);
-          const value = baseValue + trend + noise;
-          data.push({ time: date.toISOString().split('T')[0], value: parseFloat(value.toFixed(2)) });
-        } break;
-      case '1Y':
-        for (let i = 364; i >= 0; i--) {
-          const date = new Date(now); date.setDate(date.getDate() - i);
-          const progress = (364 - i) / 364;
-          const trend = Math.sin(progress * Math.PI * 3) * (baseValue * 0.10);
-          const noise = (Math.random() - 0.5) * (baseValue * 0.03);
-          const value = baseValue + trend + noise;
-          data.push({ time: date.toISOString().split('T')[0], value: parseFloat(value.toFixed(2)) });
-        } break;
-      case 'All':
-        for (let i = 500; i >= 0; i--) {
-          const date = new Date(now); date.setDate(date.getDate() - i);
-          const progress = (500 - i) / 500;
-          const trend = Math.sin(progress * Math.PI * 4) * (baseValue * 0.12);
-          const noise = (Math.random() - 0.5) * (baseValue * 0.04);
-          const value = baseValue + trend + noise;
-          data.push({ time: date.toISOString().split('T')[0], value: parseFloat(value.toFixed(2)) });
-        }
-        break;
-    }
-    if (data.length === 0) {
-        const fallbackDate = new Date();
-        data.push({ time: fallbackDate.toISOString(), value: baseValue });
-    }
-    return data;
-  };
-
-  const handleTimeframeChange = (timeframe: string) => {
-      console.log(`[HomeScreen] Timeframe changed to ${timeframe}`);
-      setSelectedTimeframe(timeframe);
-      const currentBaseValue = calculatedPortfolio?.value ?? 0;
-      const newChartData = generateChartData(timeframe, currentBaseValue > 0 ? currentBaseValue : 1000);
-      setChartData(newChartData);
-      if (newChartData.length > 0) {
-          setSelectedChartValue(newChartData[newChartData.length - 1].value);
-          setSelectedDate(newChartData[newChartData.length - 1].time);
-      }
-  };
-
-  const handleValueSelect = (value: number, time: string) => {
-      setSelectedChartValue(value);
-      setSelectedDate(time);
-  };
-
-  const formatDate = (dateString: string) => {
-      const date = new Date(dateString);
-      if (selectedTimeframe === '1D') return date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
-      return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: selectedTimeframe === '1Y' ? 'numeric' : undefined });
-    };
+      void loadData(true);
+  }, [loadData]);
 
   // --- Navigation ---
   const navigateToStockDetail = (symbol: string, name: string) => {
@@ -437,8 +294,6 @@ const HomeScreen = () => {
   // --- Modal Controls ---
   const openAddToWatchlistModal = () => setIsAddToWatchlistModalVisible(true);
   const closeAddToWatchlistModal = () => setIsAddToWatchlistModalVisible(false);
-  const openAddTransactionModal = () => setIsAddTransactionModalVisible(true);
-  const closeAddTransactionModal = () => setIsAddTransactionModalVisible(false);
   const openPriceAlertsModal = () => setIsPriceAlertsModalVisible(true);
   const closePriceAlertsModal = () => setIsPriceAlertsModalVisible(false);
 
@@ -448,24 +303,18 @@ const HomeScreen = () => {
     loadData();
   };
 
-  // Callback for when a transaction is added
-  const handleTransactionAdded = () => {
-      console.log("[HomeScreen] Transaction added, reloading portfolio data...");
-      loadPortfolioData();
-  };
-
   // --- Search Logic (with Debounce) ---
   const handleSearchChange = (text: string) => {
     setSearchQuery(text);
 
-    if (debounceTimer) {
-      clearTimeout(debounceTimer);
+    if (debounceTimer.current) {
+      clearTimeout(debounceTimer.current);
     }
 
     if (text.length <= 1) {
       setSearchResults([]);
       setIsSearchLoading(false);
-      setDebounceTimer(null);
+      debounceTimer.current = null;
       return;
     }
 
@@ -496,7 +345,7 @@ const HomeScreen = () => {
       }
     }, 300); 
 
-    setDebounceTimer(newTimer);
+    debounceTimer.current = newTimer;
   };
 
   const handleCancelSearch = () => {
@@ -546,7 +395,12 @@ const HomeScreen = () => {
             autoFocus
             className="flex-1 mr-2"
           />
-          <TouchableOpacity onPress={handleCancelSearch} className="p-1.5">
+          <TouchableOpacity
+            onPress={handleCancelSearch}
+            className="p-1.5"
+            accessibilityRole="button"
+            accessibilityLabel="Close stock search"
+          >
             <Ionicons name="close" size={28} color={colors.textSecondary} />
           </TouchableOpacity>
         </View>
@@ -574,10 +428,20 @@ const HomeScreen = () => {
              )}
 
             {/* Icons (Size remains increased) */}
-            <TouchableOpacity onPress={() => setIsSearching(true)} className="p-1.5">
+            <TouchableOpacity
+              onPress={() => setIsSearching(true)}
+              className="p-1.5"
+              accessibilityRole="button"
+              accessibilityLabel="Search stocks"
+            >
               <Ionicons name="search-outline" size={26} color={colors.textSecondary} />
             </TouchableOpacity>
-            <TouchableOpacity onPress={openPriceAlertsModal} className="p-1.5">
+            <TouchableOpacity
+              onPress={openPriceAlertsModal}
+              className="p-1.5"
+              accessibilityRole="button"
+              accessibilityLabel="View price alerts"
+            >
               <Ionicons name="notifications-outline" size={26} color={colors.textSecondary} />
             </TouchableOpacity>
         </View>
@@ -605,7 +469,12 @@ const HomeScreen = () => {
                     data={searchResults}
                     keyExtractor={(item: SearchResult) => item.id}
                     renderItem={({ item }: { item: SearchResult }) => (
-                        <TouchableOpacity onPress={() => handleSelectSearchResult(item.symbol, item.name)} className="py-2 border-b border-border">
+                        <TouchableOpacity
+                          onPress={() => handleSelectSearchResult(item.symbol, item.name)}
+                          className="py-2 border-b border-border"
+                          accessibilityRole="button"
+                          accessibilityLabel={`View ${item.symbol} details`}
+                        >
                             <Text className="text-base text-text">{item.symbol}</Text>
                             <Text className="text-sm text-textSecondary">{item.name}</Text>
                         </TouchableOpacity>
@@ -632,41 +501,31 @@ const HomeScreen = () => {
                  ) : calculatedPortfolio ? (
                      <>
                          <View className="flex-row items-baseline mt-1">
-                             <Text className="text-3xl font-bold text-text">₹ {calculatedPortfolio.value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
+                             <Text className="text-3xl font-bold text-text">Rs. {calculatedPortfolio.value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
                          </View>
                          <View className="flex-row items-center mt-1">
                              <Text className={`font-medium ${calculatedPortfolio.isPositive ? 'text-positive' : 'text-negative'}`}>
                                  {calculatedPortfolio.overallPLString} ({calculatedPortfolio.overallPLPercentString})
                              </Text>
-                             <Text className="text-textSecondary ml-2 text-xs">
-                                 {selectedDate ? formatDate(selectedDate) : 'All Time'}
-                             </Text>
+                             <Text className="text-textSecondary ml-2 text-xs">Unrealized P/L</Text>
                          </View>
                      </>
                  ) : (
                      <Text className="text-textSecondary mt-2">Portfolio data unavailable.</Text>
                  )}
 
-                 {/* Chart - Now scales mock data based on portfolio */}
-                 <View className="mt-4 -mx-4">
-                     <PortfolioChart
-                       data={chartData}
-                       height={200}
-                       onValueSelect={handleValueSelect}
-                     />
-                 </View>
-                 {/* Timeframe selector - Adjust selected styles */}
-                 <View className="flex-row justify-around mt-4">
-                     {timeframes.map((tf) => (
-                         <TouchableOpacity
-                             key={tf}
-                             onPress={() => handleTimeframeChange(tf)}
-                             className={`px-3 py-1 rounded-full ${selectedTimeframe === tf ? 'bg-primary' : 'bg-card'}`}
-                          >
-                             <Text className={`text-xs font-medium ${selectedTimeframe === tf ? 'text-white' : 'text-textSecondary'}`}>{tf}</Text>
-                         </TouchableOpacity>
-                     ))}
-                 </View>
+                 {calculatedPortfolio && (
+                   <View className="mt-4 flex-row rounded-xl bg-card p-3">
+                     <View className="flex-1">
+                       <Text className="text-xs text-textSecondary">Cost basis</Text>
+                       <Text className="mt-1 font-semibold text-text">Rs. {calculatedPortfolio.cost.toLocaleString(undefined, { maximumFractionDigits: 2 })}</Text>
+                     </View>
+                     <View className="flex-1 border-l border-border pl-3">
+                       <Text className="text-xs text-textSecondary">Holdings</Text>
+                       <Text className="mt-1 font-semibold text-text">{portfolioHoldingCount}</Text>
+                     </View>
+                   </View>
+                 )}
              </View>
 
              {/* Action Buttons as Cards */}
@@ -778,11 +637,6 @@ const HomeScreen = () => {
              isVisible={isAddToWatchlistModalVisible}
              onClose={closeAddToWatchlistModal}
              onStockAdded={handleStockAddedToWatchlist}
-           />
-            <AddStockHoldingModal
-             isVisible={isAddTransactionModalVisible}
-             onClose={closeAddTransactionModal}
-             onTransactionAdded={handleTransactionAdded}
            />
            <PriceAlertsModal
              isVisible={isPriceAlertsModalVisible}

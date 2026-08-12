@@ -119,11 +119,11 @@ const AddStockHoldingModal: React.FC<AddStockHoldingModalProps> = ({ isVisible, 
     setQuantityError(null);
     setPriceError(null);
 
-    const parsedQuantity = parseFloat(quantity);
-    const parsedPrice = parseFloat(price);
+    const parsedQuantity = Number(quantity);
+    const parsedPrice = Number(price);
 
-    if (!quantity || isNaN(parsedQuantity) || parsedQuantity <= 0) {
-      setQuantityError("Please enter a valid positive quantity.");
+    if (!Number.isSafeInteger(parsedQuantity) || parsedQuantity <= 0) {
+      setQuantityError("Share quantity must be a positive whole number.");
       isValid = false;
     }
 
@@ -148,8 +148,8 @@ const AddStockHoldingModal: React.FC<AddStockHoldingModalProps> = ({ isVisible, 
     }
     
     // Assertion: selectedCompany, quantity, price are valid at this point due to validateInputs
-    const parsedQuantity = parseFloat(quantity);
-    const parsedPrice = parseFloat(price);
+    const parsedQuantity = Number(quantity);
+    const parsedPrice = Number(price);
 
     setIsSubmitting(true);
     try {
@@ -175,6 +175,8 @@ const AddStockHoldingModal: React.FC<AddStockHoldingModalProps> = ({ isVisible, 
     <TouchableOpacity
       style={styles.suggestionItem}
       onPress={() => handleSelectCompany(item)}
+      accessibilityRole="button"
+      accessibilityLabel={`Select ${item.symbol}`}
     >
       <Text style={styles.suggestionSymbol}>{item.symbol}</Text>
       <Text style={styles.suggestionName} numberOfLines={1}>{item.name}</Text>
@@ -197,7 +199,12 @@ const AddStockHoldingModal: React.FC<AddStockHoldingModalProps> = ({ isVisible, 
             {/* Header */}
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Add Stock Holding</Text>
-              <TouchableOpacity onPress={onClose} style={styles.closeButton}>
+              <TouchableOpacity
+                onPress={onClose}
+                style={styles.closeButton}
+                accessibilityRole="button"
+                accessibilityLabel="Close add holding dialog"
+              >
                 <Ionicons name="close-circle" size={30} color={colors.textSecondary} />
               </TouchableOpacity>
             </View>
@@ -205,7 +212,7 @@ const AddStockHoldingModal: React.FC<AddStockHoldingModalProps> = ({ isVisible, 
             {/* Form Content */}
             <View style={styles.formContentContainer}>
               {/* Stock Search/Selection */}
-              <View style={styles.inputGroup}>
+              <View style={[styles.inputGroup, styles.searchInputGroup]}>
                 <Text style={styles.label}>Stock Symbol / Name</Text>
                 <View style={styles.searchContainer}>
                   <Ionicons name="search" size={20} color={colors.textSecondary} style={styles.searchIcon} />
@@ -225,7 +232,12 @@ const AddStockHoldingModal: React.FC<AddStockHoldingModalProps> = ({ isVisible, 
                     autoCapitalize="characters"
                   />
                   {searchQuery ? (
-                    <TouchableOpacity onPress={() => setSearchQuery('')} style={styles.clearIconContainer}>
+                    <TouchableOpacity
+                      onPress={() => setSearchQuery('')}
+                      style={styles.clearIconContainer}
+                      accessibilityRole="button"
+                      accessibilityLabel="Clear stock search"
+                    >
                       <Ionicons name="close-circle" size={20} color={colors.textSecondary} />
                     </TouchableOpacity>
                   ) : null}
@@ -342,6 +354,9 @@ const styles = StyleSheet.create({
   },
   inputGroup: {
       marginBottom: 15,
+  },
+  searchInputGroup: {
+      zIndex: 20,
   },
   label: {
       fontSize: 14,
@@ -471,4 +486,4 @@ const styles = StyleSheet.create({
   },
 });
 
-export default AddStockHoldingModal; 
+export default AddStockHoldingModal;

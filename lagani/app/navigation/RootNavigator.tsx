@@ -1,6 +1,6 @@
 import React from 'react';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
-import { NavigationContainer } from '@react-navigation/native';
+import { NavigationContainer, NavigatorScreenParams } from '@react-navigation/native';
 import AppNavigator, { RootTabParamList } from './AppNavigator'; // Import the Tab Navigator
 // Remove import StockDetailScreen from '../screens/StockDetailScreen';
 import TransactionHistoryScreen from '../screens/TransactionHistoryScreen';
@@ -11,7 +11,7 @@ import { colors } from '../../src/theme/colors'; // Import colors
 
 // Define Param list for the Root Stack
 export type RootStackParamList = {
-  AppTabs: { screen?: keyof RootTabParamList; params?: any }; // Screen containing the tabs
+  AppTabs: NavigatorScreenParams<RootTabParamList> | undefined;
   // Remove StockDetail: { symbol: string; name?: string };
   TransactionHistory: { symbol: string; companyName?: string };
   // Remove Search: undefined;
@@ -62,4 +62,4 @@ const RootNavigator = () => {
   );
 };
 
-export default RootNavigator; 
+export default RootNavigator;

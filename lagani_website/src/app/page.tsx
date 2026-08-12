@@ -1,218 +1,224 @@
-import Image from "next/image"; // Import Next Image
-import Iphone15Pro from "@/components/magicui/iphone-15-pro";
-import { WordRotate } from "@/components/magicui/word-rotate";
-import { ShimmerButton } from "@/components/magicui/shimmer-button";
-import { cn } from "@/lib/utils"; // shadcn utility for classnames
-import { FaGooglePlay } from "react-icons/fa"; // Icons
-import { SiAppstore } from "react-icons/si"; // App Store icon
-import {
-  FaChartPie,
-  FaExchangeAlt,
-  FaBell,
-  FaNewspaper,
-} from "react-icons/fa";
-import { Marquee } from "@/components/magicui/marquee";
-import { ClientGridPattern } from "@/components/client-grid-pattern";
+import Image from "next/image";
+import Link from "next/link";
 
-// Example stock symbols (replace with actual data if needed)
-const stockSymbols = [
-  "NABIL", "NICA", "HDL", "SHIVM", "CIT", "NLIC",
-  "UPPER", "API", "CHCL", "GBIME", "SCB", "EBL"
+import { StoreCta } from "@/components/store-cta";
+import { getPublicSiteConfig } from "@/lib/site-config";
+
+const features = [
+  {
+    number: "01",
+    title: "Portfolio tracking",
+    description:
+      "Record buys and sells, review average cost, and see unrealized performance using the latest available market price.",
+  },
+  {
+    number: "02",
+    title: "Paper trading",
+    description:
+      "Practice NEPSE trades with virtual cash before putting real capital at risk. Your simulated account stays on your device.",
+  },
+  {
+    number: "03",
+    title: "Market context",
+    description:
+      "Browse listed companies, market movers, historical charts, watchlists, price alerts, and Nepal-focused financial news.",
+  },
 ];
 
-const StockCard = ({ symbol }: { symbol: string }) => (
-  <div className="relative h-16 w-32 overflow-hidden rounded-xl border border-gray-600 bg-gray-900/50 p-3 mr-4 ">
-    <p className="font-medium text-white">
-      {symbol}
-    </p>
-    {/* Placeholder for potential price/change - add later if needed */}
-    {/* <p className="text-xs text-muted-foreground">+1.23%</p> */}
-  </div>
-);
+const dataPrinciples = [
+  {
+    label: "Latest available",
+    detail:
+      "Lagani shows the source timestamp and does not present cached NEPSE data as a live exchange feed.",
+  },
+  {
+    label: "Local by design",
+    detail:
+      "Portfolio entries, paper trades, watchlists, and alert targets are stored locally in the mobile app.",
+  },
+  {
+    label: "Decision support",
+    detail:
+      "Lagani is an educational tracking tool—not a broker, trading venue, or source of investment advice.",
+  },
+];
 
 export default function Home() {
+  const config = getPublicSiteConfig();
+
   return (
-    <div className="min-h-screen w-full bg-black text-white font-sans">
-      {/* Header */}
-      <header className="w-full">
-        <div className="container mx-auto flex items-center justify-between mt-4 px-4 md:px-8 pt-4">
-          <a href="#" className="flex items-center gap-3">
+    <div className="site-shell">
+      <a className="skip-link" href="#main-content">
+        Skip to content
+      </a>
+
+      <header className="site-header">
+        <div className="container header-inner">
+          <Link className="brand" href="/" aria-label="Lagani home">
             <Image
               src="/lagani_logo.png"
-              alt="Lagani Logo"
-              width={48}
-              height={48}
-              className="object-contain"
+              alt=""
+              width={44}
+              height={44}
+              priority
             />
-            <span className="text-5xl font-bold text-white">Lagani</span>
-          </a>
-          <div></div>
+            <span>Lagani</span>
+          </Link>
+          <nav aria-label="Primary navigation">
+            <a href="#features">Features</a>
+            <a href="#data">How data works</a>
+            <a href="#download">Get the app</a>
+          </nav>
         </div>
       </header>
 
-      {/* Marquee Section - Full width */}
-      <div className="absolute z-10 w-full pt-2">
-        <div className="relative flex h-full w-full mt-2 flex-col items-center justify-center overflow-hidden">
-          <Marquee pauseOnHover className="[--duration:40s]">
-            {stockSymbols.map((symbol) => (
-              <StockCard key={symbol} symbol={symbol} />
-            ))}
-          </Marquee>
-          <div className="pointer-events-none absolute inset-y-0 left-0 w-1/6 bg-gradient-to-r from-black"></div>
-          <div className="pointer-events-none absolute inset-y-0 right-0 w-1/6 bg-gradient-to-l from-black"></div>
-        </div>
-      </div>
+      <main id="main-content">
+        <section className="hero container" aria-labelledby="hero-title">
+          <div className="hero-copy">
+            <p className="eyebrow">Built for Nepal&apos;s investing community</p>
+            <h1 id="hero-title">
+              Your NEPSE portfolio,
+              <span> finally in focus.</span>
+            </h1>
+            <p className="hero-summary">
+              Track holdings, practice with virtual trades, follow companies, and
+              understand the latest available market data in one focused app.
+            </p>
+            <div className="hero-actions" id="download">
+              <StoreCta
+                store="apple"
+                url={config.appStoreUrl}
+                className="store-cta-primary"
+              />
+              <StoreCta store="google" url={config.playStoreUrl} />
+            </div>
+            {!config.hasDownloadLink && (
+              <p className="release-note" role="status">
+                Store releases are being prepared. Download links will appear here
+                when they are public.
+              </p>
+            )}
+            <ul className="hero-points" aria-label="Product highlights">
+              <li>NEPSE-focused</li>
+              <li>No brokerage connection</li>
+              <li>Portfolio data stays local</li>
+            </ul>
+          </div>
 
-      {/* Hero Section - Reduced vertical spacing */}
-      <section className="relative w-full flex items-center justify-center overflow-hidden py-4 md:py-6 lg:min-h-[calc(100vh-5rem)]">
-        {/* Background Grid */}
-        <ClientGridPattern
-          numSquares={90}
-          maxOpacity={0.7}
-          duration={1.5}
-          className={cn(
-            "[mask-image:radial-gradient(ellipse_at_center,white,transparent_80%)]",
-            "absolute inset-0 h-full w-full skew-y-12 z-0",
-          )}
-        />
-        
-        {/* Content Wrapper */}
-        <div className="container relative z-10 mx-auto flex flex-col lg:flex-row items-center gap-6 px-4 md:px-8">
-          {/* Left Column: Text & Buttons */}
-          <div className="flex flex-col items-center lg:items-start text-center lg:text-left lg:w-1/2">
-            <div className="min-h-[140px] md:min-h-[140px] flex items-center lg:items-start justify-center lg:justify-start">
-              <WordRotate
-                className="text-4xl md:text-5xl lg:text-6xl font-bold text-white"
-                words={[
-                  "Master the NEPSE Market.",
-                  "Your Smart Investment Hub.",
-                  "Track. Analyze. Grow.",
-                  "Paper Trade with Real Data.",
-                  "Stay Ahead with Market News.",
-                ]}
+          <div className="phone-stage" aria-label="Lagani mobile app previews">
+            <div className="phone phone-primary">
+              <span className="phone-speaker" aria-hidden="true" />
+              <Image
+                src="/app_home.png"
+                alt="Lagani home screen showing a portfolio chart and top gainers"
+                width={1080}
+                height={2400}
+                sizes="(max-width: 640px) 62vw, 300px"
+                priority
               />
             </div>
-            <p className="mt-6 text-base md:text-lg max-w-lg text-gray-300">
-              Seamlessly track your Nepal stock investments, simulate trades, and stay informed with real-time data and news. All in one place.
-            </p>
-            <div className="mt-6 flex flex-col sm:flex-row items-center justify-center lg:justify-start space-y-4 sm:space-y-0 sm:space-x-4">
-              <ShimmerButton className="shadow-lg whitespace-pre-wrap bg-[#10b981] hover:bg-[#0d9668] border border-gray-600 px-6 py-3 text-base rounded-md">
-                <a
-                  href="#"
-            target="_blank"
-            rel="noopener noreferrer"
-                  className="flex items-center gap-2"
-          >
-                  <SiAppstore className="h-5 w-5 text-[#3d87f5]" />
-                  Download on the App Store
-          </a>
-              </ShimmerButton>
-              <ShimmerButton className="shadow-lg whitespace-pre-wrap bg-[#10b981] hover:bg-[#0d9668] border border-gray-600 px-6 py-3 text-base rounded-md">
-        <a
-                  href="#"
-          target="_blank"
-          rel="noopener noreferrer"
-                  className="flex items-center gap-2"
-                >
-                  <FaGooglePlay className="h-5 w-5 text-[#01c8f7]" />
-                  Get it on Google Play
-                </a>
-              </ShimmerButton>
+            <div className="phone phone-secondary">
+              <span className="phone-speaker" aria-hidden="true" />
+              <Image
+                src="/app_virtual_trade.png"
+                alt="Lagani paper trading screen showing a virtual balance and portfolio"
+                width={1080}
+                height={2400}
+                sizes="(max-width: 640px) 42vw, 230px"
+              />
+            </div>
+            <div className="market-badge" aria-hidden="true">
+              <span>Designed around</span>
+              <strong>NEPSE</strong>
             </div>
           </div>
+        </section>
 
-          {/* Right Column: iPhone Mockup - Made 3% smaller */}
-          <div className="flex items-start justify-center lg:w-1/2 mt-8 lg:mt-16 max-w-full">
-            <div className="scale-[0.77] sm:scale-[0.87] lg:scale-[0.97]">
-                <Iphone15Pro
-                    src="./app_home.png"
-                />
+        <section className="trust-strip" aria-label="Lagani capabilities">
+          <div className="container trust-grid">
+            <p>Portfolio ledger</p>
+            <p>Historical charts</p>
+            <p>Paper trading</p>
+            <p>Market news</p>
+          </div>
+        </section>
+
+        <section className="section container" id="features" aria-labelledby="features-title">
+          <div className="section-heading">
+            <p className="eyebrow">One calm place to learn and track</p>
+            <h2 id="features-title">Useful context without the noise.</h2>
+          </div>
+          <div className="feature-grid">
+            {features.map((feature) => (
+              <article className="feature-card" key={feature.number}>
+                <span>{feature.number}</span>
+                <h3>{feature.title}</h3>
+                <p>{feature.description}</p>
+              </article>
+            ))}
+          </div>
+        </section>
+
+        <section className="section data-section" id="data" aria-labelledby="data-title">
+          <div className="container data-grid">
+            <div className="data-intro">
+              <p className="eyebrow">Know what you are looking at</p>
+              <h2 id="data-title">Market data needs honest labels.</h2>
+              <p>
+                Nepal market sources can be delayed, unavailable, or revised.
+                Lagani&apos;s architecture keeps source timestamps and cache status
+                visible so stale information is not mistaken for a live quote.
+              </p>
+              <Link className="text-link" href="/terms">
+                Read the market-data terms <span aria-hidden="true">→</span>
+              </Link>
+            </div>
+            <div className="principle-list">
+              {dataPrinciples.map((principle) => (
+                <article key={principle.label}>
+                  <h3>{principle.label}</h3>
+                  <p>{principle.detail}</p>
+                </article>
+              ))}
             </div>
           </div>
-        </div>
-      </section>
+        </section>
 
-      {/* Features Section */}
-      <section className="w-full max-w-6xl mx-auto py-12 md:py-16 px-4">
-        <h2 className="text-3xl md:text-4xl font-bold text-center mb-10 text-white">
-          Everything You Need to Navigate NEPSE
-        </h2>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {/* Portfolio Tracking */}
-          <div className="rounded-xl overflow-hidden bg-purple-400/80 shadow-lg p-6 flex flex-col">
-            <FaChartPie className="h-8 w-8 mb-3 text-white" />
-            <h3 className="text-lg font-bold text-white mb-1">Portfolio Tracking</h3>
-            <p className="text-sm text-gray-100 mb-4">Manually log trades and monitor your holdings&apos; performance.</p>
+        <section className="section container">
+          <div className="final-cta">
+            <div>
+              <p className="eyebrow">A clearer way to follow NEPSE</p>
+              <h2>Build your investing routine before your next trade.</h2>
+            </div>
+            <div className="final-actions">
+              <StoreCta store="apple" url={config.appStoreUrl} />
+              <StoreCta store="google" url={config.playStoreUrl} />
+            </div>
           </div>
-          
-          {/* Paper Trading - Double width */}
-          <div className="rounded-xl overflow-hidden bg-purple-400/80 shadow-lg p-6 flex flex-col col-span-1 md:col-span-2 lg:col-span-2">
-            <FaExchangeAlt className="h-8 w-8 mb-3 text-white" />
-            <h3 className="text-lg font-bold text-white mb-1">Paper Trading</h3>
-            <p className="text-sm text-gray-100 mb-4">Practice trading NEPSE stocks with a virtual balance.</p>
-          </div>
-          
-          {/* Price Alerts - Double width */}
-          <div className="rounded-xl overflow-hidden bg-purple-400/80 shadow-lg p-6 flex flex-col col-span-1 md:col-span-2 lg:col-span-2">
-            <FaBell className="h-8 w-8 mb-3 text-white" />
-            <h3 className="text-lg font-bold text-white mb-1">Price Alerts</h3>
-            <p className="text-sm text-gray-100 mb-4">Set price targets and get notified when they&apos;re hit.</p>
-          </div>
-          
-          {/* Market News */}
-          <div className="rounded-xl overflow-hidden bg-purple-400/80 shadow-lg p-6 flex flex-col">
-            <FaNewspaper className="h-8 w-8 mb-3 text-white" />
-            <h3 className="text-lg font-bold text-white mb-1">Market News</h3>
-            <p className="text-sm text-gray-100 mb-4">Stay updated with the latest headlines from Nepal&apos;s market.</p>
-          </div>
-        </div>
-      </section>
+        </section>
+      </main>
 
-      {/* Call to Action Section */}
-      <section className="w-full py-16 md:py-24 bg-gradient-to-b from-black to-gray-900">
-        <div className="container mx-auto flex flex-col items-center text-center px-4">
-          <h2 className="text-3xl md:text-4xl font-bold mb-4 text-white">
-            Ready to Take Control?
-          </h2>
-          <p className="text-gray-300 mb-8 max-w-xl">
-            Download Lagani today and start managing your NEPSE investments like never before.
+      <footer className="site-footer">
+        <div className="container footer-grid">
+          <div>
+            <Link className="brand footer-brand" href="/" aria-label="Lagani home">
+              <Image src="/lagani_logo.png" alt="" width={36} height={36} />
+              <span>Lagani</span>
+            </Link>
+            <p>NEPSE tracking and educational tools for Nepal&apos;s investors.</p>
+          </div>
+          <div className="footer-links" aria-label="Legal and support links">
+            <Link href="/privacy">Privacy</Link>
+            <Link href="/terms">Terms</Link>
+            {config.supportEmail && (
+              <a href={`mailto:${config.supportEmail}`}>Support</a>
+            )}
+          </div>
+          <p className="copyright">
+            © {new Date().getFullYear()} Lagani. Not investment advice.
           </p>
-          <div className="flex flex-col sm:flex-row items-center space-y-4 sm:space-y-0 sm:space-x-4">
-            <ShimmerButton className="shadow-lg whitespace-pre-wrap bg-[#10b981] hover:bg-[#0d9668] border border-gray-600 px-6 py-3 text-base rounded-md">
-              <a
-                href="#"
-          target="_blank"
-          rel="noopener noreferrer"
-                className="flex items-center gap-2"
-              >
-                <SiAppstore className="h-5 w-5 text-[#3d87f5]" />
-                Download on the App Store
-              </a>
-            </ShimmerButton>
-            <ShimmerButton className="shadow-lg whitespace-pre-wrap bg-[#10b981] hover:bg-[#0d9668] border border-gray-600 px-6 py-3 text-base rounded-md">
-              <a
-                href="#"
-          target="_blank"
-          rel="noopener noreferrer"
-                className="flex items-center gap-2"
-              >
-                <FaGooglePlay className="h-5 w-5 text-[#01c8f7]" />
-                Get it on Google Play
-              </a>
-            </ShimmerButton>
-          </div>
-        </div>
-      </section>
-
-      {/* Footer */}
-      <footer className="w-full py-6 border-t border-gray-800">
-        <div className="container mx-auto text-center text-gray-400 text-sm px-4">
-          © {new Date().getFullYear()} Lagani. All rights reserved. | 
-          <a href="#" className="hover:text-[#10b981] hover:underline underline-offset-2 ml-1 mr-1">Privacy Policy</a> |
-          <a href="#" className="hover:text-[#10b981] hover:underline underline-offset-2 ml-1">Terms of Service</a>
         </div>
       </footer>
-
     </div>
   );
 }

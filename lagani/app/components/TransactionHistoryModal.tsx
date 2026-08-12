@@ -68,7 +68,7 @@ const TransactionHistoryModal: React.FC<TransactionHistoryModalProps> = ({
              </View>
              <View style={styles.row}>
                  <Text style={styles.detailLabel}>Price:</Text>
-                 <Text style={styles.detailValue}>₹ {item.price.toFixed(2)}</Text>
+                 <Text style={styles.detailValue}>Rs. {item.price.toFixed(2)}</Text>
             </View>
         </View>
         <TouchableOpacity onPress={() => onEditRequest(item)} style={styles.editButton}>
@@ -260,4 +260,4 @@ const styles = StyleSheet.create({
     },
 });
 
-export default TransactionHistoryModal; 
+export default TransactionHistoryModal;

@@ -1,124 +1,133 @@
-# Lagani App - Marketing Website
+# Lagani website
 
-This project is a single-page marketing website for the Lagani mobile app (a Nepal finance/stock tracking application).
+Lagani's public website is a small, static-first Next.js application that explains the mobile product, establishes accurate expectations about NEPSE data, and directs visitors to verified mobile-store listings. It does not fetch quotes, hold user portfolios, or proxy the Lagani API.
 
-## Goal
+The website was audited and rebuilt on August 12, 2026. Its production build is intentionally simple: six static routes, no client-side application state, no account forms, no analytics SDK, and no live dependency on the market-data API.
 
-To create a modern, visually appealing landing page that:
-- Showcases the Lagani app within an iPhone mockup.
-- Highlights key features of the app.
-- Provides prominent download links for the App Store and Google Play.
-- Utilizes animations and modern UI components for an engaging user experience.
-- Implements a dark theme by default.
+## Product scope
 
-## Tech Stack
+The page represents the mobile app's implemented capabilities:
 
-- **Framework**: Next.js (v14+ with App Router)
-- **Language**: TypeScript
-- **Styling**: Tailwind CSS
-- **UI Components & Animations**: [magic-ui](https://magicui.design/) (integrated via `shadcn/ui` CLI)
-- **Font**: Manrope (from Google Fonts)
+- local portfolio and transaction tracking;
+- paper trading with a virtual balance;
+- NEPSE company search, movers, and historical charts;
+- watchlists and best-effort price alerts;
+- Nepal-focused market news; and
+- visible market freshness and source timestamps.
 
-## Key Components Used (from magic-ui)
+The copy deliberately does **not** promise a real-time exchange feed, brokerage execution, guaranteed alerts, investment advice, cloud sync, or an account system. Those distinctions are product and safety requirements, not merely marketing choices.
 
-- `Iphone15Pro`: For displaying the app screenshot.
-- `ColoredGridPattern`: For the animated background effect with stock market colors.
-- `WordRotate`: For the main headline rotation.
-- `ShimmerButton`: For download buttons.
-- `Marquee`: For scrolling stock symbols.
+## Technology
 
-## Completed Features
+- Next.js 16 App Router
+- React 19
+- TypeScript in strict mode
+- Tailwind CSS 4 for compilation plus project-owned CSS
+- Next.js static generation for every public route
+- Node.js 20.19 or newer; CI and the container use Node.js 22
 
-- Responsive design that works on mobile, tablet, and desktop
-- Animated colored grid background using client-side rendering to avoid hydration issues
-- Rotating headlines with fixed height container to prevent layout shifts
-- Feature cards with purple background highlighting key app features
-- "Last Traded Price" marquee showing stock symbols
-- Interactive download buttons with app store icons
-- Modern, clean dark-themed UI that highlights the app's functionality
+No external font, animation, icon, analytics, or component runtime is required. Store icons are inline, decorative SVGs, and the three product images live under `public/`.
 
-## Project Structure
-
-```
-lagani_website/
-├── public/             # Static assets (e.g., lagani_logo.png, app_home.png)
-├── src/
-│   ├── app/            # Next.js App Router files
-│   │   ├── globals.css # Global styles, Tailwind directives, CSS variables (theme)
-│   │   ├── layout.tsx  # Root layout, font setup, metadata
-│   │   └── page.tsx    # Main page component
-│   ├── components/     # UI components
-│   │   ├── magicui/    # Components added via shadcn/magic-ui
-│   │   ├── ui/         # Components added via shadcn/ui (e.g., button)
-│   │   └── client-grid-pattern.tsx # Client component wrapper for ColoredGridPattern
-│   └── lib/            # Utility functions (e.g., cn from shadcn)
-├── tailwind.config.ts  # Tailwind CSS configuration
-├── next.config.ts      # Next.js configuration
-├── package.json        # Project dependencies and scripts
-└── ...                 # Other config files (tsconfig, postcss, etc.)
-```
-
-## Getting Started
-
-### Prerequisites
-
-- Node.js (v18 or newer recommended)
-- npm or yarn
-
-### Installation & Running
-
-1.  **Clone the repository** (if you haven't already).
-2.  **Navigate to the project directory**:
-    ```bash
-    cd lagani_website
-    ```
-3.  **Install dependencies**:
-    ```bash
-    npm install
-    # or
-    # yarn install
-    ```
-4.  **Place assets**: Ensure the `lagani_logo.png` and `app_home.png` files are present in the `public/` directory.
-5.  **Run the development server**:
-    ```bash
-    npm run dev
-    # or
-    # yarn dev
-    ```
-6.  Open [http://localhost:3000](http://localhost:3000) (or the specified port) in your browser.
-
-## Current Status
-
-- ✅ Fully implemented responsive layout 
-- ✅ Hydration issues fixed with proper client/server component separation
-- ✅ ESLint errors resolved for production builds
-- ✅ Consistent styling with purple theme for feature cards
-- ✅ Fixed layout shifts by adding minimum height containers
-- ✅ Stock market colored grid animation (green/red)
-- ✅ App screenshot displayed in iPhone 15 Pro mockup
-- ✅ Bold feature headings and proper button styling
-
-## Build and Deploy
-
-To build the website for production:
+## Quick start
 
 ```bash
-npm run build
+cd lagani_website
+cp .env.example .env.local
+npm ci
+npm run dev
 ```
 
-The site can be deployed to Vercel, Netlify, or any other platform that supports Next.js applications.
+Open `http://localhost:3000`. Empty store URL variables are valid during development: the page renders clearly disabled “Coming soon” badges instead of dead links.
 
-## Learn More
+Before submitting any change, run:
 
-To learn more about Next.js, take a look at the following resources:
+```bash
+npm run verify
+npm audit --omit=dev
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+`npm run verify` runs ESLint, strict TypeScript validation, a production build, and assertions against the generated HTML.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Public configuration
 
-## Deploy on Vercel
+All variables are build-time public values. Next.js embeds `NEXT_PUBLIC_*` values into the generated pages, so changing them requires a new build and deployment.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+| Variable | Required for launch | Purpose | Safe absent behavior |
+| --- | --- | --- | --- |
+| `NEXT_PUBLIC_SITE_URL` | Yes | Canonical HTTPS origin used by metadata, `robots.txt`, and `sitemap.xml` | Uses `http://localhost:3000` |
+| `NEXT_PUBLIC_APP_STORE_URL` | When the iOS listing is public | Full App Store listing URL | Shows a disabled App Store badge |
+| `NEXT_PUBLIC_PLAY_STORE_URL` | When the Android listing is public | Full Google Play listing URL | Shows a disabled Google Play badge |
+| `NEXT_PUBLIC_SUPPORT_EMAIL` | Yes | Public support/privacy contact | Omits the support link and explains that one is pending |
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+The configuration parser accepts only credential-free `http:` or `https:` URLs and a basic valid email shape. The canonical site value must be a bare origin without a path, query, or fragment. Invalid values fail closed: store/contact values are not rendered as links and an invalid site origin falls back to localhost so release smoke review exposes the mistake.
+
+Do not put secrets in these variables. Every `NEXT_PUBLIC_*` value can be read by a visitor.
+
+## Routes
+
+| Route | Rendering | Responsibility |
+| --- | --- | --- |
+| `/` | Static | Product positioning, app previews, release links, data limitations |
+| `/privacy` | Static | Current data-handling disclosure for app, site, and API |
+| `/terms` | Static | Educational-use, market-data, alerts, and liability terms |
+| `/robots.txt` | Static metadata route | Allows crawling and points to the sitemap |
+| `/sitemap.xml` | Static metadata route | Lists the three public HTML pages |
+| unknown route | Static 404 | Standard not-found response |
+
+The legal text is an engineering-ready draft and explicitly requires qualified Nepal-specific review before commercial launch.
+
+## Commands
+
+| Command | What it proves |
+| --- | --- |
+| `npm run dev` | Local development server with fast refresh |
+| `npm run lint` | Next.js, React, TypeScript, and accessibility lint rules |
+| `npm run typecheck` | Strict type correctness without emitting files |
+| `npm run build` | Production compilation and static generation |
+| `npm run smoke` | Required text/routes, truthful release state, and no dead root link in generated HTML |
+| `npm run verify` | Complete local/CI verification sequence |
+| `npm start` | Serves the most recent production build |
+
+## Project map
+
+```text
+lagani_website/
+├── public/
+│   ├── app_home.png
+│   ├── app_virtual_trade.png
+│   └── lagani_logo.png
+├── scripts/
+│   └── smoke-build.mjs
+├── src/
+│   ├── app/
+│   │   ├── globals.css
+│   │   ├── layout.tsx
+│   │   ├── page.tsx
+│   │   ├── privacy/page.tsx
+│   │   ├── terms/page.tsx
+│   │   ├── robots.ts
+│   │   └── sitemap.ts
+│   ├── components/
+│   │   ├── legal-header.tsx
+│   │   └── store-cta.tsx
+│   └── lib/site-config.ts
+├── .env.example
+├── Dockerfile
+├── next.config.mjs
+└── package.json
+```
+
+## Deployment posture
+
+The code is deployable to any managed Next.js host or to the included container. Launch still requires the founders to supply the canonical domain, public support address, and whichever verified store URLs exist. Configure HTTPS and HSTS at the hosting edge, then run the production checks in [DEPLOYMENT.md](./DEPLOYMENT.md).
+
+The response configuration adds a restrictive content policy, denies framing, disables unused browser permissions, hides the framework header, and prevents MIME sniffing. The current content policy allows inline scripts/styles because Next.js emits inline bootstrap and style content; introducing third-party scripts requires a deliberate policy and privacy review.
+
+## Documentation
+
+- [ARCHITECTURE.md](./ARCHITECTURE.md) — rendering model, boundaries, invariants, and extension rules
+- [AUDIT.md](./AUDIT.md) — findings, corrections, evidence, and remaining launch gates
+- [DEPLOYMENT.md](./DEPLOYMENT.md) — environment, managed-host, container, rollout, and rollback procedures
+- [TESTING.md](./TESTING.md) — automated and real-browser validation
+
+The API and mobile application have separate, component-specific documentation in their own directories. The repository root documents how all three deployables fit together.
