@@ -38,7 +38,8 @@
         {
           "defaultChannel": "price-alerts"
         }
-      ]
+      ],
+      "expo-image"
     ]
   }
 }
