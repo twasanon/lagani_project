@@ -26,7 +26,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          # npm >= 11 is required to validate the lockfile: package.json pins an
+          # override (uuid@<11.1.1 -> 11.1.1) that older npm treats as desync
+          # ("Missing: uuid@7.0.3 from lock file") when re-deriving the tree.
+          node-version: 24
           cache: npm
           cache-dependency-path: lagani/package-lock.json
       - run: npm ci
